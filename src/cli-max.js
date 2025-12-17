@@ -9,7 +9,7 @@
 
 import { AutonomousRunnerCLI } from './autonomous-runner-cli.js';
 import { parseArgs } from 'util';
-import { Dashboard } from './ui/dashboard.js';
+import { InkDashboard } from './ui/ink-dashboard.js';
 import { colors, style, icons } from './ui/terminal.js';
 
 const VERSION = '1.0.0';
@@ -261,7 +261,7 @@ async function main() {
     };
   } else {
     // Dashboard mode - fancy UI
-    dashboard = new Dashboard({ verbose: values.verbose });
+    dashboard = new InkDashboard({ verbose: values.verbose });
 
     handlers = {
       onProgress: (data) => {
