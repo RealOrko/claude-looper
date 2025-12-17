@@ -149,7 +149,7 @@ Begin immediately.`;
       cwd: workingDirectory,
       skipPermissions: true,
       verbose: false,
-      model: 'sonnet', // Use Sonnet for planning (fast but capable)
+      model: 'opus', // Use Opus for planning
     });
     this.planner = new Planner(this.plannerClient);
 

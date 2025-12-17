@@ -149,11 +149,10 @@ REASON: [one sentence summary]`;
 
     try {
       // Use separate session for supervisor (doesn't pollute worker conversation)
-      // Use haiku model for fast, cheap assessments
       const result = await this.client.sendPrompt(prompt, {
         newSession: true,
         timeout: 5 * 60 * 1000, // 5 min timeout for assessment
-        model: 'haiku', // Fast, cheap model for supervision
+        model: 'sonnet', // Use Sonnet for supervision
       });
 
       const assessment = this.parseAssessment(result.response);
@@ -485,7 +484,7 @@ SUGGESTIONS: [comma-separated improvements, or "none"]`;
       const result = await this.client.sendPrompt(prompt, {
         newSession: true,
         timeout: 3 * 60 * 1000,
-        model: 'haiku',
+        model: 'sonnet', // Use Sonnet for plan review
       });
 
       const response = result.response || '';
@@ -542,7 +541,7 @@ REASON: [one sentence explanation]`;
       const result = await this.client.sendPrompt(prompt, {
         newSession: true,
         timeout: 2 * 60 * 1000, // 2 min timeout
-        model: 'haiku',
+        model: 'sonnet', // Use Sonnet for step verification
       });
 
       const response = result.response || '';
