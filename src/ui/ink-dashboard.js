@@ -42,6 +42,7 @@ const ProgressBar = ({ percent = 0, width = 30 }) => {
 const StatusBadge = ({ status }) => {
   const configs = {
     initializing: { color: 'gray', label: 'INIT' },
+    planning: { color: 'magenta', label: 'PLANNING' },
     running: { color: 'cyan', label: 'RUNNING' },
     verifying: { color: 'yellow', label: 'VERIFYING' },
     completed: { color: 'green', label: 'COMPLETE' },
@@ -68,17 +69,16 @@ const ScoreDisplay = ({ score }) => {
 
 // Header component
 const Header = ({ goal, timeLimit, startTime }) => {
-  return e(Box, { flexDirection: 'column', marginBottom: 1 },
+  return e(Box, { flexDirection: 'column', marginBottom: 0 },
     e(Gradient, { name: 'atlas' },
       e(BigText, { text: 'CLAUDE', font: 'tiny' })
     ),
     e(Text, { color: 'gray' }, 'Autonomous Runner'),
-    e(Text, null, ' '),
-    e(Box, { borderStyle: 'round', borderColor: 'cyan', paddingX: 2, paddingY: 1 },
+    e(Box, { borderStyle: 'round', borderColor: 'cyan', paddingX: 1, paddingY: 0, marginTop: 0 },
       e(Text, { color: 'white', bold: true }, goal)
     ),
-    e(Box, { marginTop: 1 },
-      e(Text, { color: 'gray' }, 'Time Limit: '),
+    e(Box, { marginTop: 0 },
+      e(Text, { color: 'gray' }, 'Time: '),
       e(Text, { color: 'white' }, timeLimit),
       e(Text, null, '  '),
       e(Text, { color: 'gray' }, 'Started: '),
@@ -135,6 +135,45 @@ const LogEntry = ({ type, message, timestamp }) => {
   );
 };
 
+// Plan step component
+const PlanStep = ({ step, isCurrent }) => {
+  const statusIcon = step.status === 'completed' ? '✓' :
+                     step.status === 'failed' ? '✗' :
+                     isCurrent ? '→' : ' ';
+  const statusColor = step.status === 'completed' ? 'green' :
+                      step.status === 'failed' ? 'red' :
+                      isCurrent ? 'cyan' : 'gray';
+
+  return e(Text, null,
+    e(Text, { color: statusColor }, `${statusIcon} ${step.number}. `),
+    e(Text, { color: isCurrent ? 'white' : 'gray' }, step.description),
+    e(Text, { color: 'gray', dimColor: true }, ` [${step.complexity}]`)
+  );
+};
+
+// Plan display component
+const PlanDisplay = ({ plan, currentStep }) => {
+  if (!plan || !plan.steps || plan.steps.length === 0) {
+    return null;
+  }
+
+  const progress = plan.steps.filter(s => s.status === 'completed').length;
+  const total = plan.steps.length;
+
+  return e(Box, { flexDirection: 'column', marginTop: 0 },
+    e(Box, { marginBottom: 0 },
+      e(Text, { color: 'cyan', bold: true }, `Plan: `),
+      e(Text, { color: 'white' }, `${progress}/${total} steps`)
+    ),
+    e(Box, { borderStyle: 'single', borderColor: 'gray', paddingX: 1, paddingY: 0, flexDirection: 'column' },
+      ...plan.steps.slice(0, 6).map((step, index) =>
+        e(PlanStep, { key: index, step, isCurrent: step.number === currentStep })
+      ),
+      plan.steps.length > 6 && e(Text, { color: 'gray' }, `  ... and ${plan.steps.length - 6} more`)
+    )
+  );
+};
+
 // Main Dashboard component
 const Dashboard = ({ state, logs }) => {
   const {
@@ -149,11 +188,13 @@ const Dashboard = ({ state, logs }) => {
     score = null,
     consecutiveIssues = 0,
     phase = '',
+    plan = null,
+    currentStep = 0,
   } = state;
 
-  return e(Box, { flexDirection: 'column', padding: 1 },
+  return e(Box, { flexDirection: 'column', paddingX: 1, paddingY: 0 },
     e(Header, { goal, timeLimit, startTime }),
-    e(Box, { borderStyle: 'single', borderColor: 'gray', paddingX: 1, paddingY: 1 },
+    e(Box, { borderStyle: 'single', borderColor: 'gray', paddingX: 1, paddingY: 0 },
       e(Box, { alignItems: 'center' },
         e(Box, { marginRight: 1 },
           status === 'running'
@@ -180,11 +221,12 @@ const Dashboard = ({ state, logs }) => {
         )
       )
     ),
-    phase && e(Box, { marginTop: 1 },
+    phase && !plan && e(Box, { marginTop: 0 },
       e(Text, { color: 'gray' }, 'Phase: '),
       e(Text, { color: 'white' }, phase)
     ),
-    e(Box, { flexDirection: 'column', marginTop: 1 },
+    plan && e(PlanDisplay, { plan, currentStep }),
+    e(Box, { flexDirection: 'column', marginTop: 0 },
       e(Box, { borderStyle: 'single', borderColor: 'gray', flexDirection: 'row', height: 8 },
         e(Box, { flexDirection: 'column', flexGrow: 1, paddingX: 1, overflow: 'hidden' },
           e(Text, { color: 'cyan', bold: true }, '─ Recent Activity ─'),
@@ -242,6 +284,8 @@ export class InkDashboard {
       consecutiveIssues: 0,
       phase: '',
       sessionId: null,
+      plan: null,
+      currentStep: 0,
     };
     this.logs = [];
     this.instance = null;
@@ -288,17 +332,137 @@ export class InkDashboard {
       this.state.status = 'running';
       this.state.startTime = Date.now();
       this.addLog('info', 'Starting autonomous execution...');
+    } else if (data.type === 'planning') {
+      this.state.status = 'planning';
+      this.addLog('info', data.message || 'Creating execution plan...');
+    } else if (data.type === 'plan_created') {
+      this.state.plan = data.plan;
+      this.state.currentStep = 1;
+      const stepCount = data.plan?.steps?.length || 0;
+      this.addLog('success', `Plan created with ${stepCount} steps`);
+    } else if (data.type === 'step_verification_pending') {
+      if (data.step) {
+        this.addLog('info', `Verifying step ${data.step.number}...`);
+      }
+    } else if (data.type === 'step_verification_started') {
+      this.state.status = 'verifying';
+    } else if (data.type === 'step_complete') {
+      this.state.status = 'running';
+      if (data.step) {
+        const verified = data.verification ? ' (verified)' : '';
+        this.addLog('success', `Step ${data.step.number} complete${verified}`);
+        // Update plan step status
+        if (this.state.plan && this.state.plan.steps) {
+          const stepIndex = this.state.plan.steps.findIndex(s => s.number === data.step.number);
+          if (stepIndex >= 0) {
+            this.state.plan.steps[stepIndex].status = 'completed';
+          }
+        }
+      }
+      if (data.progress) {
+        this.state.currentStep = data.progress.current;
+        this.state.progress = data.progress.percentComplete;
+      }
+    } else if (data.type === 'step_rejected') {
+      this.state.status = 'running';
+      if (data.step) {
+        this.addLog('warning', `Step ${data.step.number} rejected: ${data.reason}`);
+      }
+    } else if (data.type === 'step_blocked_replanning') {
+      if (data.step) {
+        this.addLog('warning', `Step ${data.step.number} blocked, creating sub-plan...`);
+      }
+    } else if (data.type === 'subplan_creating') {
+      this.state.status = 'planning';
+      this.addLog('info', 'Creating alternative approach...');
+    } else if (data.type === 'subplan_created') {
+      this.state.status = 'running';
+      const stepCount = data.subPlan?.steps?.length || 0;
+      this.addLog('success', `Sub-plan created with ${stepCount} sub-steps`);
+      // Store sub-plan info
+      this.state.subPlan = data.subPlan;
+      this.state.subPlanParent = data.parentStep;
+    } else if (data.type === 'subplan_failed') {
+      this.state.status = 'running';
+      this.state.subPlan = null;
+      this.state.subPlanParent = null;
+      if (data.step) {
+        this.addLog('error', `Sub-plan failed: ${data.reason}`);
+      }
+      if (data.progress) {
+        this.state.currentStep = data.progress.current;
+        this.state.progress = data.progress.percentComplete;
+      }
+    } else if (data.type === 'step_failed') {
+      if (data.step) {
+        this.addLog('error', `Step ${data.step.number} failed: ${data.reason}`);
+        if (this.state.plan && this.state.plan.steps) {
+          const stepIndex = this.state.plan.steps.findIndex(s => s.number === data.step.number);
+          if (stepIndex >= 0) {
+            this.state.plan.steps[stepIndex].status = 'failed';
+          }
+        }
+      }
+      if (data.progress) {
+        this.state.currentStep = data.progress.current;
+        this.state.progress = data.progress.percentComplete;
+      }
+    } else if (data.type === 'step_blocked') {
+      if (data.step) {
+        this.addLog('warning', `Step ${data.step.number} blocked: ${data.reason}`);
+      }
+      if (data.progress) {
+        this.state.currentStep = data.progress.current;
+      }
     } else if (data.type === 'iteration_complete') {
       this.state.iteration = data.iteration;
-      this.state.progress = data.progress?.overallProgress || 0;
+      this.state.progress = data.planProgress?.percentComplete || data.progress?.overallProgress || 0;
       this.state.sessionId = data.sessionId;
       if (data.time) {
         this.state.elapsed = data.time.elapsedMs || 0;
         this.state.remaining = data.time.remaining || '';
       }
+      if (data.planProgress) {
+        this.state.currentStep = data.planProgress.current;
+      }
     } else if (data.type === 'verification_started') {
       this.state.status = 'verifying';
       this.addLog('info', 'Verifying completion claim...');
+    } else if (data.type === 'plan_review_started') {
+      this.addLog('info', 'Reviewing execution plan...');
+    } else if (data.type === 'plan_review_complete') {
+      const status = data.review?.approved ? 'approved' : 'flagged';
+      this.addLog(data.review?.approved ? 'success' : 'warning', `Plan review: ${status}`);
+    } else if (data.type === 'plan_review_warning') {
+      if (data.issues?.length > 0) {
+        this.addLog('warning', `Plan issues: ${data.issues.slice(0, 2).join(', ')}`);
+      }
+      if (data.missingSteps?.length > 0) {
+        this.addLog('warning', `Missing steps: ${data.missingSteps.slice(0, 2).join(', ')}`);
+      }
+    } else if (data.type === 'final_verification_started') {
+      this.state.status = 'verifying';
+      this.addLog('info', 'Running final verification...');
+    } else if (data.type === 'goal_verification_complete') {
+      const result = data.result;
+      if (result?.achieved) {
+        this.addLog('success', `Goal verified (${result.confidence} confidence)`);
+      } else {
+        this.addLog('warning', `Goal not verified: ${result?.reason?.substring(0, 60) || 'unknown'}`);
+      }
+    } else if (data.type === 'smoke_tests_complete') {
+      const result = data.result;
+      if (result?.passed) {
+        this.addLog('success', `Smoke tests: ${result.summary || 'passed'}`);
+      } else {
+        this.addLog('warning', `Smoke tests: ${result?.summary || 'failed'}`);
+      }
+    } else if (data.type === 'final_verification_passed') {
+      this.state.status = 'completed';
+      this.addLog('success', 'Final verification PASSED');
+    } else if (data.type === 'final_verification_failed') {
+      this.state.status = 'error';
+      this.addLog('error', `Final verification FAILED: ${data.reason?.substring(0, 60) || 'see report'}`);
     }
     this.update();
   }
@@ -355,7 +519,50 @@ export class InkDashboard {
     console.log(`  Progress: ${report.goal?.progress || 0}%`);
     console.log(`  Iterations: ${report.session?.iterations || 0}`);
     console.log(`  Time: ${report.time?.elapsed || 'N/A'}`);
+
+    // Show plan summary if available
+    if (report.plan) {
+      console.log('─'.repeat(60));
+      console.log(`  Plan: ${report.plan.completed}/${report.plan.totalSteps} steps completed`);
+      if (report.plan.failed > 0) {
+        console.log(`  Failed Steps: ${report.plan.failed}`);
+      }
+      console.log('  Steps:');
+      for (const step of report.plan.steps || []) {
+        const icon = step.status === 'completed' ? '✓' :
+                     step.status === 'failed' ? '✗' : ' ';
+        const color = step.status === 'completed' ? '\x1b[32m' :
+                      step.status === 'failed' ? '\x1b[31m' : '\x1b[90m';
+        console.log(`    ${color}${icon} ${step.number}. ${step.description}\x1b[0m`);
+      }
+    }
+
+    // Show final verification results
+    if (report.finalVerification) {
+      const fv = report.finalVerification;
+      console.log('─'.repeat(60));
+      console.log('  \x1b[1mFinal Verification:\x1b[0m');
+
+      const goalIcon = fv.goalAchieved ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
+      console.log(`    ${goalIcon} Goal Achieved: ${fv.goalAchieved ? 'Yes' : 'No'}`);
+      console.log(`      Confidence: ${fv.confidence || 'Unknown'}`);
+      console.log(`      Functional: ${fv.functional || 'Unknown'}`);
+      console.log(`      Recommendation: ${fv.recommendation || 'Unknown'}`);
+
+      if (fv.gaps) {
+        console.log(`    \x1b[33m⚠\x1b[0m Gaps: ${fv.gaps}`);
+      }
+
+      const smokeIcon = fv.smokeTestsPassed ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
+      console.log(`    ${smokeIcon} Smoke Tests: ${fv.smokeTestsSummary || (fv.smokeTestsPassed ? 'Passed' : 'Failed')}`);
+
+      const overallIcon = fv.overallPassed ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
+      const overallColor = fv.overallPassed ? '\x1b[32m' : '\x1b[31m';
+      console.log(`    ${overallIcon} ${overallColor}Overall: ${fv.overallPassed ? 'PASSED' : 'FAILED'}\x1b[0m`);
+    }
+
     if (report.abortReason) {
+      console.log('─'.repeat(60));
       console.log(`  Abort Reason: ${report.abortReason}`);
     }
     console.log('═'.repeat(60));

@@ -7,12 +7,45 @@ import { spawn } from 'child_process';
 import { stat, readFile } from 'fs/promises';
 import { join, isAbsolute } from 'path';
 
+// Memory limits
+const MAX_VERIFICATION_HISTORY = 20;
+
 export class CompletionVerifier {
   constructor(client, goalTracker, config) {
     this.client = client;
     this.goalTracker = goalTracker;
     this.config = config;
     this.verificationHistory = [];
+  }
+
+  /**
+   * Add to verification history with bounds check
+   */
+  addToHistory(result) {
+    this.verificationHistory.push(result);
+    if (this.verificationHistory.length > MAX_VERIFICATION_HISTORY) {
+      this.verificationHistory = this.verificationHistory.slice(-MAX_VERIFICATION_HISTORY);
+    }
+  }
+
+  /**
+   * Run a command and return success/output
+   */
+  async runCommand(cmd, cwd, timeout = 60000) {
+    try {
+      const result = await this.execCommand(cmd, cwd, timeout);
+      return {
+        success: result.exitCode === 0,
+        output: result.stdout + result.stderr,
+        exitCode: result.exitCode,
+      };
+    } catch (error) {
+      return {
+        success: false,
+        output: error.message,
+        exitCode: -1,
+      };
+    }
   }
 
   /**
@@ -55,7 +88,7 @@ export class CompletionVerifier {
     result.layers.challenge = await this.challengeCompletion(completionClaim);
     if (!result.layers.challenge.passed) {
       result.failures.push('Failed LLM challenge - insufficient or vague evidence provided');
-      this.verificationHistory.push(result);
+      this.addToHistory(result);
       return result;
     }
     result.evidence = result.layers.challenge.evidence;
@@ -75,14 +108,14 @@ export class CompletionVerifier {
         if (empty.length > 0) {
           result.failures.push(`Empty files: ${empty.join(', ')}`);
         }
-        this.verificationHistory.push(result);
+        this.addToHistory(result);
         return result;
       }
     } else if (verifyConfig.requireArtifacts && !this.isReadOnlyTask(result.evidence)) {
       // No files mentioned but artifacts required (and not a read-only task)
       result.layers.artifacts = { passed: false, verified: [], missing: [], empty: [] };
       result.failures.push('No file artifacts mentioned - completion claim lacks evidence');
-      this.verificationHistory.push(result);
+      this.addToHistory(result);
       return result;
     } else {
       result.layers.artifacts = { passed: true, verified: [], missing: [], empty: [], skipped: true };
@@ -96,7 +129,7 @@ export class CompletionVerifier {
       );
       if (!result.layers.validation.passed) {
         result.failures.push(`Validation failed: ${result.layers.validation.error || 'Tests did not pass'}`);
-        this.verificationHistory.push(result);
+        this.addToHistory(result);
         return result;
       }
     } else {
@@ -105,7 +138,7 @@ export class CompletionVerifier {
 
     // All layers passed
     result.passed = true;
-    this.verificationHistory.push(result);
+    this.addToHistory(result);
     return result;
   }
 
@@ -616,6 +649,150 @@ Please fix the failing tests or build errors before claiming completion.
 Continue working on the task now.`;
 
     return prompt;
+  }
+
+  /**
+   * Run smoke tests based on goal type
+   * Attempts to actually run/test the result
+   */
+  async runSmokeTests(goal, workingDirectory) {
+    const result = {
+      passed: false,
+      tests: [],
+      errors: [],
+    };
+
+    const goalLower = goal.toLowerCase();
+
+    try {
+      // Detect what type of project/goal this is and run appropriate tests
+
+      // 1. If it's a Node.js project, try npm test or npm run build
+      const packageJsonPath = join(workingDirectory, 'package.json');
+      try {
+        const content = await readFile(packageJsonPath, 'utf8');
+        const pkg = JSON.parse(content);
+
+        // Try npm test if available
+        if (pkg.scripts?.test && pkg.scripts.test !== 'echo "Error: no test specified" && exit 1') {
+          const testResult = await this.runCommand('npm test', workingDirectory, 60000);
+          result.tests.push({
+            name: 'npm test',
+            passed: testResult.success,
+            output: testResult.output?.substring(0, 500),
+          });
+        }
+
+        // Try npm run build if goal mentions build
+        if (pkg.scripts?.build && (goalLower.includes('build') || goalLower.includes('compile'))) {
+          const buildResult = await this.runCommand('npm run build', workingDirectory, 60000);
+          result.tests.push({
+            name: 'npm run build',
+            passed: buildResult.success,
+            output: buildResult.output?.substring(0, 500),
+          });
+        }
+
+        // Try npm start briefly if goal mentions server/API
+        if (pkg.scripts?.start && (goalLower.includes('server') || goalLower.includes('api'))) {
+          const startResult = await this.runCommand('timeout 5 npm start || true', workingDirectory, 10000);
+          // Server starting without immediate crash is a pass
+          const crashed = startResult.output?.toLowerCase().includes('error') &&
+                         !startResult.output?.toLowerCase().includes('listening');
+          result.tests.push({
+            name: 'Server starts',
+            passed: !crashed,
+            output: startResult.output?.substring(0, 500),
+          });
+        }
+      } catch (e) {
+        // Not a Node.js project
+      }
+
+      // 2. Python projects
+      try {
+        const hasTestDir = await stat(join(workingDirectory, 'tests')).then(() => true).catch(() => false);
+        const hasPytest = await stat(join(workingDirectory, 'pytest.ini')).then(() => true).catch(() => false);
+
+        if (hasTestDir || hasPytest) {
+          const testResult = await this.runCommand('python -m pytest -v --tb=short 2>&1 || pytest -v --tb=short 2>&1', workingDirectory, 60000);
+          result.tests.push({
+            name: 'pytest',
+            passed: testResult.success || testResult.output?.includes('passed'),
+            output: testResult.output?.substring(0, 500),
+          });
+        }
+      } catch (e) {
+        // Not a Python project
+      }
+
+      // 3. Go projects
+      if (goalLower.includes('go') || goalLower.includes('golang')) {
+        try {
+          const hasGoMod = await stat(join(workingDirectory, 'go.mod')).then(() => true).catch(() => false);
+          if (hasGoMod) {
+            const testResult = await this.runCommand('go test ./...', workingDirectory, 60000);
+            result.tests.push({
+              name: 'go test',
+              passed: testResult.success,
+              output: testResult.output?.substring(0, 500),
+            });
+
+            const buildResult = await this.runCommand('go build ./...', workingDirectory, 60000);
+            result.tests.push({
+              name: 'go build',
+              passed: buildResult.success,
+              output: buildResult.output?.substring(0, 500),
+            });
+          }
+        } catch (e) {
+          // Not a Go project
+        }
+      }
+
+      // 4. Makefile-based projects
+      try {
+        const makefilePath = join(workingDirectory, 'Makefile');
+        const content = await readFile(makefilePath, 'utf8');
+
+        if (content.includes('test:')) {
+          const testResult = await this.runCommand('make test', workingDirectory, 60000);
+          result.tests.push({
+            name: 'make test',
+            passed: testResult.success,
+            output: testResult.output?.substring(0, 500),
+          });
+        }
+
+        if (content.includes('build:') && (goalLower.includes('build') || goalLower.includes('compile'))) {
+          const buildResult = await this.runCommand('make build', workingDirectory, 60000);
+          result.tests.push({
+            name: 'make build',
+            passed: buildResult.success,
+            output: buildResult.output?.substring(0, 500),
+          });
+        }
+      } catch (e) {
+        // No Makefile
+      }
+
+      // Determine overall pass/fail
+      if (result.tests.length > 0) {
+        const passedTests = result.tests.filter(t => t.passed).length;
+        result.passed = passedTests === result.tests.length;
+        result.summary = `${passedTests}/${result.tests.length} smoke tests passed`;
+      } else {
+        // No tests to run - consider it a pass (no way to verify)
+        result.passed = true;
+        result.summary = 'No smoke tests applicable';
+      }
+
+    } catch (error) {
+      result.errors.push(error.message);
+      result.summary = `Smoke test error: ${error.message}`;
+    }
+
+    return result;
   }
 
   /**

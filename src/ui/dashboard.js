@@ -3,6 +3,10 @@
  * Manages full-screen layout with real-time updates
  */
 
+// Memory limits
+const MAX_SCORE_HISTORY = 50;
+const MAX_MESSAGES = 100;
+
 import {
   cursor, screen, colors, style, gradient, icons, spinners, box, color
 } from './terminal.js';
@@ -292,6 +296,10 @@ export class Dashboard {
     // Update score history
     if (assessment.score !== undefined) {
       this.state.scoreHistory.push(assessment.score);
+      // Trim score history
+      if (this.state.scoreHistory.length > MAX_SCORE_HISTORY) {
+        this.state.scoreHistory = this.state.scoreHistory.slice(-MAX_SCORE_HISTORY);
+      }
       this.state.lastScore = assessment.score;
     }
 

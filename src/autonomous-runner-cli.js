@@ -9,6 +9,7 @@ import { Supervisor } from './supervisor.js';
 import { PhaseManager } from './phase-manager.js';
 import { Config } from './config.js';
 import { CompletionVerifier } from './completion-verifier.js';
+import { Planner } from './planner.js';
 
 export class AutonomousRunnerCLI {
   constructor(options = {}) {
@@ -25,9 +26,11 @@ export class AutonomousRunnerCLI {
     this.supervisor = null;
     this.phaseManager = null;
     this.verifier = null;
+    this.planner = null;
 
     // Execution state
     this.iterationCount = 0;
+    this.planCreated = false;
     this.lastProgressCheck = Date.now();
     this.isRunning = false;
     this.shouldStop = false;
@@ -37,6 +40,13 @@ export class AutonomousRunnerCLI {
     // Verification state
     this.pendingCompletion = null;
     this.verificationFailures = 0;
+
+    // Step verification state
+    this.pendingStepCompletion = null;
+    this.stepVerificationFailures = 0;
+
+    // Sub-plan state
+    this.pendingSubPlan = null;
 
     // Callbacks
     this.onProgress = options.onProgress || (() => {});
@@ -62,6 +72,25 @@ export class AutonomousRunnerCLI {
    * Build the system context for Claude
    */
   buildSystemContext(primaryGoal, subGoals, workingDirectory) {
+    // Get current step info if plan exists
+    const currentStep = this.planner?.getCurrentStep();
+    const planProgress = this.planner?.getProgress();
+
+    let stepContext = '';
+    if (currentStep && planProgress) {
+      const completedSteps = this.planner.plan.steps
+        .filter(s => s.status === 'completed')
+        .map(s => `  ✓ ${s.number}. ${s.description}`)
+        .join('\n');
+
+      stepContext = `
+## CURRENT STEP (${planProgress.current} of ${planProgress.total})
+${currentStep.description}
+Complexity: ${currentStep.complexity}
+
+${completedSteps ? `## COMPLETED STEPS\n${completedSteps}\n` : ''}`;
+    }
+
     return `# AUTONOMOUS EXECUTION MODE
 
 You are running in AUTONOMOUS MODE. This means:
@@ -75,7 +104,7 @@ ${primaryGoal}
 
 ${subGoals.length > 0 ? `## SUB-GOALS (Complete in order)
 ${subGoals.map((g, i) => `${i + 1}. ${g}`).join('\n')}` : ''}
-
+${stepContext}
 ## WORKING DIRECTORY
 ${workingDirectory}
 
@@ -84,8 +113,10 @@ ${workingDirectory}
 1. **Work Autonomously**: Don't wait for input - determine and execute the next step
 2. **Take Action**: Use tools. Don't just plan - execute.
 3. **Report Progress**: State what you did and what you'll do next
-4. **Signal Completion**: Say "TASK COMPLETE" when the goal is fully achieved
-5. **Stay Focused**: Every action should advance the goal
+4. **Signal Step Completion**: Say "STEP COMPLETE" when the current step is done
+5. **Signal Blockers**: Say "STEP BLOCKED: [reason]" if you cannot proceed
+6. **Signal Task Completion**: Say "TASK COMPLETE" when ALL steps are done
+7. **Stay Focused**: Every action should advance the current step
 
 Begin immediately.`;
   }
@@ -109,9 +140,19 @@ Begin immediately.`;
     this.supervisorClient = new ClaudeCodeClient({
       cwd: workingDirectory,
       skipPermissions: true,
-      verbose: false, // Supervisor doesn't need verbose output
+      verbose: false,
     });
     this.supervisor = new Supervisor(this.supervisorClient, this.goalTracker, this.config);
+
+    // Create separate client for planner
+    this.plannerClient = new ClaudeCodeClient({
+      cwd: workingDirectory,
+      skipPermissions: true,
+      verbose: false,
+      model: 'sonnet', // Use Sonnet for planning (fast but capable)
+    });
+    this.planner = new Planner(this.plannerClient);
+
     this.phaseManager = new PhaseManager(
       this.config.getTimeLimit(timeLimit),
       this.config
@@ -133,6 +174,7 @@ Begin immediately.`;
       goal: primaryGoal,
       subGoals,
       timeLimit,
+      plan: null, // Plan will be created at start of run()
     });
 
     return this;
@@ -268,6 +310,20 @@ Begin immediately.`;
       prompts.push(this.goalTracker.getGoalContextPrompt());
     }
 
+    // Add planner step context if available
+    if (this.planner) {
+      const currentStep = this.planner.getCurrentStep();
+      const progress = this.planner.getProgress();
+
+      if (currentStep) {
+        const stepPrompt = `## CURRENT STEP (${progress.current}/${progress.total})
+**${currentStep.description}**
+
+Focus on completing this step. Say "STEP COMPLETE" when done.`;
+        prompts.push(stepPrompt);
+      }
+    }
+
     // Default continuation prompt
     if (prompts.length === 0) {
       return 'Continue. What is your next action?';
@@ -292,6 +348,70 @@ Begin immediately.`;
     // Update progress tracking
     const progressIndicators = this.goalTracker.updateProgress(response);
 
+    // Check for step completion signals (planner-based)
+    const stepCompleteMatch = response.match(/STEP\s+COMPLETE/i);
+    const stepBlockedMatch = response.match(/STEP\s+BLOCKED[:\s]*(.+?)(?:\n|$)/i);
+
+    if (stepCompleteMatch && this.planner && !this.pendingStepCompletion) {
+      const claimedStep = this.planner.getCurrentStep();
+      if (claimedStep) {
+        // Don't advance yet - set pending for verification
+        this.pendingStepCompletion = {
+          step: claimedStep,
+          response: response,
+          iteration: this.iterationCount,
+        };
+
+        this.onProgress({
+          type: 'step_verification_pending',
+          step: claimedStep,
+        });
+      }
+    }
+
+    if (stepBlockedMatch && this.planner) {
+      const reason = stepBlockedMatch[1]?.trim() || 'Unknown reason';
+      const blockedStep = this.planner.getCurrentStep();
+
+      // Check if we can attempt a sub-plan
+      if (this.planner.canAttemptSubPlan() && !blockedStep?.isSubStep) {
+        // Set pending sub-plan creation
+        this.pendingSubPlan = {
+          step: blockedStep,
+          reason: reason,
+          iteration: this.iterationCount,
+        };
+
+        this.onProgress({
+          type: 'step_blocked_replanning',
+          step: blockedStep,
+          reason,
+        });
+      } else {
+        // Already tried sub-plan or this IS a sub-step - fail and move on
+        if (this.planner.isInSubPlan()) {
+          // Sub-plan step failed - abort the whole sub-plan
+          this.planner.abortSubPlan(reason);
+          this.onProgress({
+            type: 'subplan_failed',
+            step: blockedStep,
+            reason,
+            progress: this.planner.getProgress(),
+          });
+        } else {
+          // Main step failed after sub-plan attempt
+          this.planner.failCurrentStep(reason);
+          this.planner.advanceStep();
+          this.onProgress({
+            type: 'step_failed',
+            step: blockedStep,
+            reason,
+            progress: this.planner.getProgress(),
+          });
+        }
+      }
+    }
+
     // Emit message event
     this.onMessage({
       iteration: this.iterationCount,
@@ -314,13 +434,16 @@ Begin immediately.`;
     const verifyConfig = this.config.get('verification') || {};
     const verificationEnabled = verifyConfig.enabled !== false;
 
-    if (completionPhrases.some(phrase => lowerResponse.includes(phrase))) {
+    // Check if planner indicates all steps complete
+    const plannerComplete = this.planner?.isComplete();
+
+    if (plannerComplete || completionPhrases.some(phrase => lowerResponse.includes(phrase))) {
       if (verificationEnabled) {
         // Don't immediately accept - set pending for verification
         this.pendingCompletion = {
           claim: response,
           iteration: this.iterationCount,
-          trigger: 'completion_phrase',
+          trigger: plannerComplete ? 'planner_complete' : 'completion_phrase',
         };
       } else {
         // Verification disabled - accept immediately
@@ -346,11 +469,15 @@ Begin immediately.`;
       }
     }
 
+    // Get planner progress if available
+    const plannerProgress = this.planner?.getProgress();
+
     return {
       iteration: this.iterationCount,
       response,
       sessionId: result.sessionId,
       progress: this.goalTracker.getProgressSummary(),
+      planProgress: plannerProgress,
       supervision: supervisionResult?.assessment,
       shouldStop: this.shouldStop,
     };
@@ -370,7 +497,42 @@ Begin immediately.`;
     });
 
     try {
-      while (!this.shouldStop && !this.phaseManager.isTimeExpired()) {
+      // Create execution plan first
+      this.onProgress({ type: 'planning', message: 'Creating execution plan...' });
+
+      const plan = await this.planner.createPlan(
+        this.primaryGoal,
+        this.initialContext,
+        this.workingDirectory
+      );
+      this.planCreated = true;
+
+      this.onProgress({
+        type: 'plan_created',
+        plan: plan,
+        summary: this.planner.getSummary(),
+      });
+
+      // Review plan before execution
+      this.onProgress({ type: 'plan_review_started', plan });
+      const planReview = await this.supervisor.reviewPlan(plan, this.primaryGoal);
+
+      this.onProgress({
+        type: 'plan_review_complete',
+        review: planReview,
+      });
+
+      if (!planReview.approved) {
+        // Plan has issues - warn but continue (don't block execution)
+        this.onProgress({
+          type: 'plan_review_warning',
+          issues: planReview.issues,
+          missingSteps: planReview.missingSteps,
+          suggestions: planReview.suggestions,
+        });
+      }
+
+      while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete()) {
         let iterationResult;
         let retries = 0;
         const maxRetries = this.config.get('maxRetries');
@@ -402,6 +564,107 @@ Begin immediately.`;
           ...iterationResult,
           time: this.phaseManager.getTimeStatus(),
         });
+
+        // Handle pending step verification
+        if (this.pendingStepCompletion) {
+          this.onProgress({
+            type: 'step_verification_started',
+            step: this.pendingStepCompletion.step,
+          });
+
+          const stepVerification = await this.supervisor.verifyStepCompletion(
+            this.pendingStepCompletion.step,
+            this.pendingStepCompletion.response
+          );
+
+          if (stepVerification.verified) {
+            // Step verified - advance
+            const completedStep = this.pendingStepCompletion.step;
+            this.planner.advanceStep();
+            this.pendingStepCompletion = null;
+            this.stepVerificationFailures = 0;
+
+            this.onProgress({
+              type: 'step_complete',
+              step: completedStep,
+              progress: this.planner.getProgress(),
+              verification: stepVerification,
+            });
+          } else {
+            // Step not verified - reject claim
+            this.stepVerificationFailures++;
+            const rejectedStep = this.pendingStepCompletion.step;
+            this.pendingStepCompletion = null;
+
+            this.onProgress({
+              type: 'step_rejected',
+              step: rejectedStep,
+              reason: stepVerification.reason,
+              failures: this.stepVerificationFailures,
+            });
+
+            // Tell Claude the step wasn't actually complete
+            await this.client.continueConversation(
+              `## Step Not Complete
+
+Your claim that Step ${rejectedStep.number} ("${rejectedStep.description}") is complete was not verified.
+
+Reason: ${stepVerification.reason}
+
+Please continue working on this step and say "STEP COMPLETE" only when it is truly finished.`
+            );
+          }
+        }
+
+        // Handle pending sub-plan creation
+        if (this.pendingSubPlan) {
+          this.onProgress({
+            type: 'subplan_creating',
+            step: this.pendingSubPlan.step,
+            reason: this.pendingSubPlan.reason,
+          });
+
+          const subPlan = await this.planner.createSubPlan(
+            this.pendingSubPlan.step,
+            this.pendingSubPlan.reason,
+            this.workingDirectory
+          );
+
+          if (subPlan) {
+            this.onProgress({
+              type: 'subplan_created',
+              parentStep: this.pendingSubPlan.step,
+              subPlan: subPlan,
+            });
+
+            // Tell Claude about the new sub-plan
+            const subPlanPrompt = `## Alternative Approach Required
+
+The previous step was blocked: "${this.pendingSubPlan.reason}"
+
+I've created an alternative approach with ${subPlan.totalSteps} sub-steps:
+${subPlan.steps.map(s => `${s.number}. ${s.description}`).join('\n')}
+
+Let's start with sub-step 1: ${subPlan.steps[0]?.description}
+
+Begin working on this sub-step now.`;
+
+            await this.client.continueConversation(subPlanPrompt);
+          } else {
+            // Sub-plan creation failed - mark step as failed and move on
+            this.planner.failCurrentStep(this.pendingSubPlan.reason);
+            this.planner.advanceStep();
+
+            this.onProgress({
+              type: 'step_failed',
+              step: this.pendingSubPlan.step,
+              reason: 'Sub-plan creation failed',
+              progress: this.planner.getProgress(),
+            });
+          }
+
+          this.pendingSubPlan = null;
+        }
 
         // Handle pending completion verification
         if (this.pendingCompletion) {
@@ -475,8 +738,68 @@ Begin immediately.`;
         }
       }
 
+      // Final verification: Goal verification + Smoke tests (if plan completed)
+      let finalVerification = null;
+      if (this.planner?.isComplete() && !this.abortReason) {
+        this.onProgress({ type: 'final_verification_started' });
+
+        // 1. Verify the original goal was achieved (not just steps)
+        const goalVerification = await this.supervisor.verifyGoalAchieved(
+          this.primaryGoal,
+          this.planner.plan.steps,
+          this.workingDirectory
+        );
+
+        this.onProgress({
+          type: 'goal_verification_complete',
+          result: goalVerification,
+        });
+
+        // 2. Run smoke tests
+        const smokeTests = await this.verifier.runSmokeTests(
+          this.primaryGoal,
+          this.workingDirectory
+        );
+
+        this.onProgress({
+          type: 'smoke_tests_complete',
+          result: smokeTests,
+        });
+
+        finalVerification = {
+          goalVerification,
+          smokeTests,
+          overallPassed: goalVerification.achieved && smokeTests.passed,
+        };
+
+        // Update final summary with verification results
+        if (this.finalSummary) {
+          this.finalSummary.goalVerification = goalVerification;
+          this.finalSummary.smokeTests = smokeTests;
+          this.finalSummary.fullyVerified = finalVerification.overallPassed;
+        }
+
+        // If verification failed, update status
+        if (!finalVerification.overallPassed) {
+          this.onProgress({
+            type: 'final_verification_failed',
+            goalVerification,
+            smokeTests,
+            reason: goalVerification.achieved
+              ? `Smoke tests failed: ${smokeTests.summary}`
+              : `Goal not achieved: ${goalVerification.reason}`,
+          });
+        } else {
+          this.onProgress({
+            type: 'final_verification_passed',
+            goalVerification,
+            smokeTests,
+          });
+        }
+      }
+
       // Generate final report
-      const finalReport = this.generateFinalReport();
+      const finalReport = this.generateFinalReport(finalVerification);
       this.onComplete(finalReport);
       return finalReport;
 
@@ -496,16 +819,24 @@ Begin immediately.`;
   /**
    * Generate the final execution report
    */
-  generateFinalReport() {
+  generateFinalReport(finalVerification = null) {
     const timeStatus = this.phaseManager.getTimeStatus();
     const progressSummary = this.goalTracker.getProgressSummary();
     const supervisorStats = this.supervisor.getStats();
     const phaseReport = this.phaseManager.getStatusReport();
+    const planProgress = this.planner?.getProgress();
 
-    // Determine final status
+    // Determine final status - use planner completion if available
     let status;
     if (this.abortReason) {
       status = 'aborted';
+    } else if (this.planner?.isComplete()) {
+      // Check if final verification passed
+      if (finalVerification && !finalVerification.overallPassed) {
+        status = 'verification_failed';
+      } else {
+        status = 'completed';
+      }
     } else if (this.goalTracker.isComplete()) {
       status = 'completed';
     } else if (timeStatus.isExpired) {
@@ -521,9 +852,16 @@ Begin immediately.`;
       goal: {
         primary: this.goalTracker.primaryGoal,
         subGoals: this.goalTracker.subGoals,
-        progress: progressSummary.overallProgress,
+        progress: planProgress?.percentComplete || progressSummary.overallProgress,
         milestones: this.goalTracker.completedMilestones,
       },
+      plan: this.planner?.plan ? {
+        analysis: this.planner.plan.analysis,
+        steps: this.planner.plan.steps,
+        totalSteps: this.planner.plan.totalSteps,
+        completed: planProgress?.completed || 0,
+        failed: planProgress?.failed || 0,
+      } : null,
       time: {
         elapsed: timeStatus.elapsed,
         limit: this.phaseManager.formatDuration(this.phaseManager.timeLimit),
@@ -541,6 +879,17 @@ Begin immediately.`;
         stats: this.verifier?.getStats() || null,
         finalStatus: this.finalSummary?.verified ? 'verified' : 'unverified',
       },
+      finalVerification: finalVerification ? {
+        goalAchieved: finalVerification.goalVerification?.achieved,
+        confidence: finalVerification.goalVerification?.confidence,
+        functional: finalVerification.goalVerification?.functional,
+        recommendation: finalVerification.goalVerification?.recommendation,
+        gaps: finalVerification.goalVerification?.gaps,
+        smokeTestsPassed: finalVerification.smokeTests?.passed,
+        smokeTestsSummary: finalVerification.smokeTests?.summary,
+        smokeTestsRun: finalVerification.smokeTests?.tests?.length || 0,
+        overallPassed: finalVerification.overallPassed,
+      } : null,
       phases: phaseReport.phases,
       checkpoints: phaseReport.checkpoints,
     };

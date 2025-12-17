@@ -4,6 +4,9 @@
  * Implements escalation system for drift recovery
  */
 
+// Memory limits
+const MAX_ASSESSMENT_HISTORY = 50;
+
 export class Supervisor {
   constructor(client, goalTracker, config = null) {
     this.client = client;
@@ -161,6 +164,11 @@ REASON: [one sentence summary]`;
         assessment,
         responseSnippet: response.substring(0, 100),
       });
+
+      // Trim history to prevent unbounded memory growth
+      if (this.assessmentHistory.length > MAX_ASSESSMENT_HISTORY) {
+        this.assessmentHistory = this.assessmentHistory.slice(-MAX_ASSESSMENT_HISTORY);
+      }
 
       // Update issue counter
       if (assessment.action !== 'CONTINUE') {
@@ -439,6 +447,194 @@ Take action now. Continued stagnation will escalate to session termination.`,
       consecutiveIssues: this.consecutiveIssues,
       escalated,
     };
+  }
+
+  /**
+   * Review a plan before execution
+   * Returns { approved: boolean, issues: [], suggestions: [], revisedSteps: [] }
+   */
+  async reviewPlan(plan, originalGoal) {
+    const prompt = `You are reviewing an execution plan before it begins.
+
+## ORIGINAL GOAL
+${originalGoal}
+
+## PROPOSED PLAN
+Analysis: ${plan.analysis || 'None provided'}
+
+Steps:
+${plan.steps.map(s => `${s.number}. ${s.description} [${s.complexity}]`).join('\n')}
+
+## YOUR TASK
+
+Critically review this plan. Consider:
+1. Does it fully address the original goal?
+2. Are any critical steps missing?
+3. Is the order logical?
+4. Are steps too vague or too granular?
+5. Are there any obvious blockers or risks?
+
+Respond in EXACTLY this format:
+
+APPROVED: [YES/NO]
+ISSUES: [comma-separated list of problems, or "none"]
+MISSING_STEPS: [comma-separated list of missing steps, or "none"]
+SUGGESTIONS: [comma-separated improvements, or "none"]`;
+
+    try {
+      const result = await this.client.sendPrompt(prompt, {
+        newSession: true,
+        timeout: 3 * 60 * 1000,
+        model: 'haiku',
+      });
+
+      const response = result.response || '';
+      const approved = response.toUpperCase().includes('APPROVED: YES');
+
+      const issuesMatch = response.match(/ISSUES:\s*(.+?)(?:\n|$)/i);
+      const missingMatch = response.match(/MISSING_STEPS:\s*(.+?)(?:\n|$)/i);
+      const suggestionsMatch = response.match(/SUGGESTIONS:\s*(.+?)(?:\n|$)/i);
+
+      const parseList = (match) => {
+        if (!match || match[1].toLowerCase().trim() === 'none') return [];
+        return match[1].split(',').map(s => s.trim()).filter(s => s);
+      };
+
+      return {
+        approved,
+        issues: parseList(issuesMatch),
+        missingSteps: parseList(missingMatch),
+        suggestions: parseList(suggestionsMatch),
+        raw: response,
+      };
+    } catch (error) {
+      console.error('[Supervisor] Plan review failed:', error.message);
+      // On failure, approve to avoid blocking
+      return { approved: true, issues: [], missingSteps: [], suggestions: [], error: error.message };
+    }
+  }
+
+  /**
+   * Verify a step completion claim
+   * Returns { verified: boolean, reason: string }
+   */
+  async verifyStepCompletion(step, responseContent) {
+    const prompt = `You are verifying whether a step was actually completed.
+
+## STEP TO VERIFY
+Step ${step.number}: ${step.description}
+Complexity: ${step.complexity}
+
+## ASSISTANT'S RESPONSE
+${responseContent.substring(0, 3000)}
+
+## YOUR TASK
+Did the assistant actually complete this step? Look for:
+- Concrete actions taken (not just plans)
+- Evidence the step's objective was achieved
+- Actual output, file changes, or results
+
+Respond in EXACTLY this format:
+VERIFIED: [YES/NO]
+REASON: [one sentence explanation]`;
+
+    try {
+      const result = await this.client.sendPrompt(prompt, {
+        newSession: true,
+        timeout: 2 * 60 * 1000, // 2 min timeout
+        model: 'haiku',
+      });
+
+      const response = result.response || '';
+      const verified = response.toUpperCase().includes('VERIFIED: YES');
+      const reasonMatch = response.match(/REASON:\s*(.+?)(?:\n|$)/i);
+      const reason = reasonMatch ? reasonMatch[1].trim() : 'No reason provided';
+
+      return { verified, reason };
+    } catch (error) {
+      // On failure, trust the claim to avoid blocking
+      console.error('[Supervisor] Step verification failed:', error.message);
+      return { verified: true, reason: 'Verification unavailable - trusting claim' };
+    }
+  }
+
+  /**
+   * Final verification that the original goal was achieved
+   * This is separate from step verification - verifies the GOAL not the steps
+   */
+  async verifyGoalAchieved(originalGoal, completedSteps, workingDirectory) {
+    const stepsSummary = completedSteps
+      .map(s => `${s.status === 'completed' ? '✓' : '✗'} ${s.number}. ${s.description}`)
+      .join('\n');
+
+    const prompt = `You are performing FINAL VERIFICATION that a goal was truly achieved.
+
+## ORIGINAL GOAL
+${originalGoal}
+
+## COMPLETED STEPS
+${stepsSummary}
+
+## WORKING DIRECTORY
+${workingDirectory}
+
+## YOUR TASK
+
+This is the final check before declaring success. Be CRITICAL and thorough.
+
+Consider:
+1. Does the work done actually achieve the ORIGINAL GOAL?
+2. Are there any gaps between what was done and what was asked?
+3. Would a human reviewing this work be satisfied?
+4. Is the result functional and complete, not just "done"?
+
+Think about edge cases and what could still be missing.
+
+Respond in EXACTLY this format:
+
+GOAL_ACHIEVED: [YES/NO]
+CONFIDENCE: [HIGH/MEDIUM/LOW]
+GAPS: [list any gaps between goal and result, or "none"]
+FUNCTIONAL: [YES/NO/UNKNOWN] - Would this actually work if used?
+RECOMMENDATION: [ACCEPT/REJECT/NEEDS_TESTING]
+REASON: [one paragraph explanation]`;
+
+    try {
+      const result = await this.client.sendPrompt(prompt, {
+        newSession: true,
+        timeout: 3 * 60 * 1000,
+        model: 'sonnet', // Use smarter model for final verification
+      });
+
+      const response = result.response || '';
+      const achieved = response.toUpperCase().includes('GOAL_ACHIEVED: YES');
+      const confidenceMatch = response.match(/CONFIDENCE:\s*(HIGH|MEDIUM|LOW)/i);
+      const functionalMatch = response.match(/FUNCTIONAL:\s*(YES|NO|UNKNOWN)/i);
+      const recommendationMatch = response.match(/RECOMMENDATION:\s*(ACCEPT|REJECT|NEEDS_TESTING)/i);
+      const gapsMatch = response.match(/GAPS:\s*(.+?)(?:\n|$)/i);
+      const reasonMatch = response.match(/REASON:\s*(.+?)(?:\n\n|$)/is);
+
+      return {
+        achieved,
+        confidence: confidenceMatch ? confidenceMatch[1].toUpperCase() : 'UNKNOWN',
+        functional: functionalMatch ? functionalMatch[1].toUpperCase() : 'UNKNOWN',
+        recommendation: recommendationMatch ? recommendationMatch[1].toUpperCase() : 'UNKNOWN',
+        gaps: gapsMatch && gapsMatch[1].toLowerCase().trim() !== 'none'
+          ? gapsMatch[1].trim() : null,
+        reason: reasonMatch ? reasonMatch[1].trim() : 'No reason provided',
+        raw: response,
+      };
+    } catch (error) {
+      console.error('[Supervisor] Goal verification failed:', error.message);
+      return {
+        achieved: false,
+        confidence: 'LOW',
+        functional: 'UNKNOWN',
+        recommendation: 'NEEDS_TESTING',
+        reason: `Verification failed: ${error.message}`,
+        error: error.message,
+      };
+    }
   }
 
   /**

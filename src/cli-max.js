@@ -119,9 +119,80 @@ function quietComplete(report) {
 // Verbose/debug mode handlers (no dashboard, plain text logs)
 function verboseProgress(data) {
   console.log(`\n[PROGRESS] ${data.type || 'update'}`);
-  if (data.iteration) console.log(`  Iteration: ${data.iteration}`);
-  if (data.progress) console.log(`  Progress: ${JSON.stringify(data.progress)}`);
-  if (data.sessionId) console.log(`  Session: ${data.sessionId}`);
+  if (data.type === 'planning') {
+    console.log(`  ${data.message || 'Creating execution plan...'}`);
+  } else if (data.type === 'plan_created') {
+    console.log(`  Plan created with ${data.plan?.steps?.length || 0} steps`);
+    if (data.plan?.steps) {
+      data.plan.steps.forEach(s => console.log(`    ${s.number}. ${s.description} [${s.complexity}]`));
+    }
+  } else if (data.type === 'step_verification_pending') {
+    console.log(`  ⋯ Verifying step ${data.step?.number}...`);
+  } else if (data.type === 'step_verification_started') {
+    console.log(`  ⋯ Step verification in progress...`);
+  } else if (data.type === 'step_complete') {
+    const verified = data.verification ? ' (verified)' : '';
+    console.log(`  ✓ Step ${data.step?.number} complete${verified}: ${data.step?.description}`);
+  } else if (data.type === 'step_rejected') {
+    console.log(`  ✗ Step ${data.step?.number} rejected: ${data.reason}`);
+  } else if (data.type === 'step_blocked_replanning') {
+    console.log(`  ⚠ Step ${data.step?.number} blocked, creating sub-plan...`);
+  } else if (data.type === 'subplan_creating') {
+    console.log(`  ⋯ Creating alternative approach...`);
+  } else if (data.type === 'subplan_created') {
+    console.log(`  ✓ Sub-plan created with ${data.subPlan?.steps?.length || 0} sub-steps`);
+    if (data.subPlan?.steps) {
+      data.subPlan.steps.forEach(s => console.log(`      ${s.number}. ${s.description}`));
+    }
+  } else if (data.type === 'subplan_failed') {
+    console.log(`  ✗ Sub-plan failed: ${data.reason}`);
+  } else if (data.type === 'step_failed') {
+    console.log(`  ✗ Step ${data.step?.number} failed: ${data.reason}`);
+  } else if (data.type === 'step_blocked') {
+    console.log(`  ✗ Step ${data.step?.number} blocked: ${data.reason}`);
+  } else if (data.type === 'plan_review_started') {
+    console.log(`  ⋯ Reviewing execution plan...`);
+  } else if (data.type === 'plan_review_complete') {
+    const status = data.review?.approved ? '✓ approved' : '⚠ flagged';
+    console.log(`  ${status}`);
+  } else if (data.type === 'plan_review_warning') {
+    if (data.issues?.length > 0) {
+      console.log(`  ⚠ Plan issues: ${data.issues.join(', ')}`);
+    }
+    if (data.missingSteps?.length > 0) {
+      console.log(`  ⚠ Missing steps: ${data.missingSteps.join(', ')}`);
+    }
+    if (data.suggestions?.length > 0) {
+      console.log(`  💡 Suggestions: ${data.suggestions.join(', ')}`);
+    }
+  } else if (data.type === 'final_verification_started') {
+    console.log(`  ⋯ Running final verification...`);
+  } else if (data.type === 'goal_verification_complete') {
+    const r = data.result;
+    const icon = r?.achieved ? '✓' : '✗';
+    console.log(`  ${icon} Goal verified: ${r?.achieved ? 'Yes' : 'No'} (${r?.confidence || 'unknown'} confidence)`);
+    if (r?.gaps) console.log(`    Gaps: ${r.gaps}`);
+    console.log(`    Recommendation: ${r?.recommendation || 'unknown'}`);
+  } else if (data.type === 'smoke_tests_complete') {
+    const r = data.result;
+    const icon = r?.passed ? '✓' : '✗';
+    console.log(`  ${icon} Smoke tests: ${r?.summary || (r?.passed ? 'Passed' : 'Failed')}`);
+    if (r?.tests?.length > 0) {
+      r.tests.forEach(t => {
+        const tIcon = t.passed ? '✓' : '✗';
+        console.log(`      ${tIcon} ${t.name}`);
+      });
+    }
+  } else if (data.type === 'final_verification_passed') {
+    console.log(`  ✓ FINAL VERIFICATION PASSED`);
+  } else if (data.type === 'final_verification_failed') {
+    console.log(`  ✗ FINAL VERIFICATION FAILED: ${data.reason || 'see report'}`);
+  } else {
+    if (data.iteration) console.log(`  Iteration: ${data.iteration}`);
+    if (data.planProgress) console.log(`  Plan: ${data.planProgress.current}/${data.planProgress.total} steps`);
+    if (data.progress) console.log(`  Progress: ${JSON.stringify(data.progress)}`);
+    if (data.sessionId) console.log(`  Session: ${data.sessionId}`);
+  }
 }
 
 function verboseMessage(data) {
@@ -159,6 +230,31 @@ function verboseComplete(report) {
   console.log(`  Progress: ${report.goal?.progress || 0}%`);
   console.log(`  Iterations: ${report.session?.iterations || 0}`);
   console.log(`  Time: ${report.time?.elapsed || 'N/A'}`);
+
+  if (report.plan) {
+    console.log(`  Plan: ${report.plan.completed}/${report.plan.totalSteps} steps completed`);
+    if (report.plan.failed > 0) {
+      console.log(`  Failed Steps: ${report.plan.failed}`);
+    }
+  }
+
+  // Show final verification results
+  if (report.finalVerification) {
+    const fv = report.finalVerification;
+    console.log(`\n  Final Verification:`);
+    const goalIcon = fv.goalAchieved ? '✓' : '✗';
+    console.log(`    ${goalIcon} Goal Achieved: ${fv.goalAchieved ? 'Yes' : 'No'}`);
+    console.log(`      Confidence: ${fv.confidence || 'Unknown'}`);
+    console.log(`      Recommendation: ${fv.recommendation || 'Unknown'}`);
+    if (fv.gaps) {
+      console.log(`    ⚠ Gaps: ${fv.gaps}`);
+    }
+    const smokeIcon = fv.smokeTestsPassed ? '✓' : '✗';
+    console.log(`    ${smokeIcon} Smoke Tests: ${fv.smokeTestsSummary || (fv.smokeTestsPassed ? 'Passed' : 'Failed')}`);
+    const overallIcon = fv.overallPassed ? '✓' : '✗';
+    console.log(`    ${overallIcon} Overall: ${fv.overallPassed ? 'PASSED' : 'FAILED'}`);
+  }
+
   if (report.abortReason) console.log(`  Abort Reason: ${report.abortReason}`);
   console.log('═'.repeat(60));
 }

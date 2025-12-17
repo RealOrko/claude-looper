@@ -6,6 +6,9 @@
 import { spawn } from 'child_process';
 import { EventEmitter } from 'events';
 
+// Memory limits
+const MAX_CONVERSATION_HISTORY = 100; // Keep last 100 messages (50 exchanges)
+
 export class ClaudeCodeClient extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -83,6 +86,11 @@ export class ClaudeCodeClient extends EventEmitter {
             content: result.response,
             timestamp: Date.now(),
           });
+
+          // Trim history to prevent unbounded memory growth
+          if (this.conversationHistory.length > MAX_CONVERSATION_HISTORY) {
+            this.conversationHistory = this.conversationHistory.slice(-MAX_CONVERSATION_HISTORY);
+          }
 
           resolve(result);
         } catch (parseError) {

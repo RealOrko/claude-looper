@@ -3,6 +3,9 @@
  * Breaks down large tasks into manageable phases with checkpoints
  */
 
+// Memory limits
+const MAX_CHECKPOINTS = 100;
+
 export class PhaseManager {
   constructor(timeLimit, config) {
     this.timeLimit = timeLimit;
@@ -134,6 +137,11 @@ export class PhaseManager {
       data,
     };
     this.checkpoints.push(checkpoint);
+
+    // Trim checkpoints to prevent unbounded memory growth
+    if (this.checkpoints.length > MAX_CHECKPOINTS) {
+      this.checkpoints = this.checkpoints.slice(-MAX_CHECKPOINTS);
+    }
 
     const currentPhase = this.getCurrentPhase();
     if (currentPhase) {

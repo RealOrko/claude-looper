@@ -3,6 +3,10 @@
  * Tracks the original goals and measures progress toward completion
  */
 
+// Memory limits
+const MAX_HISTORY = 100;
+const MAX_MILESTONES = 50;
+
 export class GoalTracker {
   constructor(primaryGoal, subGoals = []) {
     this.primaryGoal = primaryGoal;
@@ -133,6 +137,10 @@ After responding, continue working on the task autonomously.
     toolResults.forEach(result => {
       if (result.success && result.significantAction) {
         this.completedMilestones.push(result.description);
+        // Trim milestones
+        if (this.completedMilestones.length > MAX_MILESTONES) {
+          this.completedMilestones = this.completedMilestones.slice(-MAX_MILESTONES);
+        }
       }
     });
 
@@ -143,6 +151,11 @@ After responding, continue working on the task autonomously.
       response: response.substring(0, 500),
       indicators,
     });
+
+    // Trim history to prevent unbounded memory growth
+    if (this.history.length > MAX_HISTORY) {
+      this.history = this.history.slice(-MAX_HISTORY);
+    }
 
     return indicators;
   }
@@ -156,6 +169,10 @@ After responding, continue working on the task autonomously.
       goal.status = 'completed';
       goal.progress = 100;
       this.completedMilestones.push(`Sub-goal ${goalId}: ${goal.description}`);
+      // Trim milestones
+      if (this.completedMilestones.length > MAX_MILESTONES) {
+        this.completedMilestones = this.completedMilestones.slice(-MAX_MILESTONES);
+      }
       this.recalculateOverallProgress();
 
       // Move to next phase
