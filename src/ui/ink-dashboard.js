@@ -184,10 +184,41 @@ const Dashboard = ({ state, logs }) => {
       e(Text, { color: 'gray' }, 'Phase: '),
       e(Text, { color: 'white' }, phase)
     ),
-    logs.length > 0 && e(Box, { flexDirection: 'column', marginTop: 1 },
-      e(Text, { color: 'gray', dimColor: true }, '─── Recent Activity ───'),
-      ...logs.slice(-5).map((log, index) =>
-        e(LogEntry, { key: index, ...log })
+    e(Box, { flexDirection: 'column', marginTop: 1 },
+      e(Box, { borderStyle: 'single', borderColor: 'gray', flexDirection: 'row', height: 8 },
+        e(Box, { flexDirection: 'column', flexGrow: 1, paddingX: 1, overflow: 'hidden' },
+          e(Text, { color: 'cyan', bold: true }, '─ Recent Activity ─'),
+          ...(() => {
+            const visible = logs.slice(-6);
+            const entries = visible.map((log, index) =>
+              e(LogEntry, { key: index, ...log })
+            );
+            // Pad with empty lines if fewer than 6 entries
+            while (entries.length < 6) {
+              entries.push(e(Text, { key: `empty-${entries.length}` }, ' '));
+            }
+            return entries;
+          })()
+        ),
+        e(Box, { flexDirection: 'column', width: 1 },
+          ...(() => {
+            // Simple scrollbar visualization
+            const total = logs.length;
+            const barHeight = 6;
+            if (total <= 6) {
+              return Array(barHeight).fill(null).map((_, i) =>
+                e(Text, { key: i, color: 'gray' }, '│')
+              );
+            }
+            const scrollPos = Math.floor((total - 6) / Math.max(1, total - 6) * (barHeight - 2));
+            return Array(barHeight).fill(null).map((_, i) => {
+              if (i >= scrollPos && i < scrollPos + 2) {
+                return e(Text, { key: i, color: 'cyan' }, '█');
+              }
+              return e(Text, { key: i, color: 'gray' }, '░');
+            });
+          })()
+        )
       )
     )
   );
