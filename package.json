@@ -1,0 +1,21 @@
+{
+  "name": "claude-autonomous-runner",
+  "version": "1.0.0",
+  "description": "Run Claude in continuous autonomous mode with LLM-based supervision",
+  "type": "module",
+  "main": "src/index.js",
+  "bin": {
+    "claude-auto": "./src/cli-max.js"
+  },
+  "scripts": {
+    "start": "node src/cli-max.js"
+  },
+  "dependencies": {
+    "glob": "^10.3.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": ["claude", "ai", "autonomous", "agent", "cli", "supervisor"],
+  "license": "MIT"
+}
