@@ -18,7 +18,7 @@ export class AutonomousRunnerCLI {
       cwd: options.workingDirectory || process.cwd(),
       skipPermissions: true,
       verbose: options.verbose || false,
-      model: 'sonnet', // Use Sonnet for worker
+      model: 'opus', // Use Opus for worker
     });
 
     this.goalTracker = null;
