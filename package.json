@@ -8,7 +8,8 @@
     "claude-auto": "./src/cli-max.js"
   },
   "scripts": {
-    "start": "node src/cli-max.js"
+    "start": "node src/cli-max.js",
+    "docker:build": "docker build -t claude ."
   },
   "dependencies": {
     "glob": "^10.3.0",

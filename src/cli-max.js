@@ -33,6 +33,7 @@ ${colors.white}${style.bold}OPTIONS:${style.reset}
   ${colors.green}-j, --json${style.reset}               Output progress as JSON
   ${colors.green}-h, --help${style.reset}               Show this help message
   ${colors.green}--version${style.reset}                Show version number
+  ${colors.green}--docker${style.reset}                 Run inside the claude docker container
 
 ${colors.white}${style.bold}EXAMPLES:${style.reset}
   ${colors.gray}# Simple single goal${style.reset}
@@ -47,6 +48,9 @@ ${colors.white}${style.bold}EXAMPLES:${style.reset}
 
   ${colors.gray}# With additional context${style.reset}
   ${colors.cyan}claude-auto${style.reset} "Fix the failing tests" -c "Focus on the auth module tests" -t 1h
+
+  ${colors.gray}# Run in docker container (mounts current dir and ~/.claude for auth)${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --docker "Build a REST API"
 
 ${colors.white}${style.bold}REQUIREMENTS:${style.reset}
   ${icons.arrow} Claude Code CLI must be installed and authenticated
@@ -272,6 +276,62 @@ async function checkClaudeCodeInstalled() {
   }
 }
 
+async function checkDockerImageExists() {
+  const { exec } = await import('child_process');
+  const { promisify } = await import('util');
+  const execAsync = promisify(exec);
+
+  try {
+    await execAsync('docker image inspect claude');
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function runInDocker(args) {
+  const { spawn } = await import('child_process');
+  const { homedir } = await import('os');
+  const path = await import('path');
+
+  const cwd = process.cwd();
+  const home = homedir();
+  const claudeConfigDir = path.join(home, '.claude');
+
+  // Build docker run command
+  const dockerArgs = [
+    'run',
+    '--rm',
+    '-it',
+    // Mount current directory as workspace
+    '-v', `${cwd}:/home/claude/workspace`,
+    // Mount ~/.claude as readonly for credentials
+    '-v', `${claudeConfigDir}:/home/claude/.claude:ro`,
+    // Set working directory
+    '-w', '/home/claude/workspace',
+    // Use the claude image
+    'claude',
+    // Run claude-auto with the passed arguments
+    'claude-auto',
+    ...args,
+  ];
+
+  log(`${icons.arrow} Running in docker container...`, 'cyan');
+  log(`${colors.gray}  Mounting: ${cwd} -> /home/claude/workspace${style.reset}`);
+  log(`${colors.gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude (readonly)${style.reset}`);
+  log('');
+
+  const proc = spawn('docker', dockerArgs, {
+    stdio: 'inherit',
+  });
+
+  return new Promise((resolve) => {
+    proc.on('close', (code) => {
+      resolve(code);
+    });
+  });
+}
+
 async function main() {
   const { values, positionals } = parseArgs({
     options: {
@@ -285,6 +345,7 @@ async function main() {
       json: { type: 'boolean', short: 'j', default: false },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', default: false },
+      docker: { type: 'boolean', default: false },
     },
     allowPositionals: true,
   });
@@ -297,6 +358,21 @@ async function main() {
   if (values.version) {
     console.log(VERSION);
     process.exit(0);
+  }
+
+  // Handle docker mode
+  if (values.docker) {
+    const hasDockerImage = await checkDockerImageExists();
+    if (!hasDockerImage) {
+      log(`${icons.error} Error: Docker image 'claude' not found.`, 'red');
+      log('Build it first: npm run docker:build', 'dim');
+      process.exit(1);
+    }
+
+    // Filter out --docker from args and pass the rest to docker
+    const dockerArgs = process.argv.slice(2).filter(arg => arg !== '--docker');
+    const exitCode = await runInDocker(dockerArgs);
+    process.exit(exitCode);
   }
 
   // Check for Claude Code CLI

@@ -52,6 +52,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
 # Install Claude Code globally
 RUN npm install -g @anthropic-ai/claude-code
 
+# Copy and install claude-looper CLI globally
+COPY . /tmp/claude-looper
+RUN cd /tmp/claude-looper && npm install && npm link && rm -rf /tmp/claude-looper
+
 # Create claude user with sudo access (UID 1000 to match typical host user)
 # First remove any existing user with UID 1000, then create claude user
 RUN existing_user=$(getent passwd 1000 | cut -d: -f1) \
