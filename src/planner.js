@@ -56,7 +56,7 @@ Keep the plan to 3-10 steps. Combine trivial steps, split complex ones.`;
 
     const result = await this.client.sendPrompt(prompt, {
       newSession: true,
-      timeout: 60000,
+      timeout: 5 * 60 * 1000, // 5 minutes
     });
 
     this.plan = this.parsePlan(result.response, goal);

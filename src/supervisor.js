@@ -148,7 +148,7 @@ REASON: [one sentence summary]`;
       // Use separate session for supervisor (doesn't pollute worker conversation)
       const result = await this.client.sendPrompt(prompt, {
         newSession: true,
-        timeout: 30000, // 30s timeout for assessment
+        timeout: 5 * 60 * 1000, // 5 min timeout for assessment
       });
 
       const assessment = this.parseAssessment(result.response);

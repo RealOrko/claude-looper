@@ -23,8 +23,8 @@ export class CompletionVerifier {
     return {
       enabled: config.enabled ?? true,
       maxAttempts: config.maxAttempts ?? 3,
-      challengeTimeout: config.challengeTimeout ?? 60000,
-      testTimeout: config.testTimeout ?? 120000,
+      challengeTimeout: config.challengeTimeout ?? 5 * 60 * 1000,
+      testTimeout: config.testTimeout ?? 5 * 60 * 1000,
       requireArtifacts: config.requireArtifacts ?? true,
       runTests: config.runTests ?? true,
       testCommands: config.testCommands || ['npm test', 'pytest', 'go test ./...'],
@@ -483,7 +483,7 @@ Provide your evidence now:`;
   /**
    * Execute a shell command
    */
-  execCommand(cmd, cwd, timeout = 120000) {
+  execCommand(cmd, cwd, timeout = 5 * 60 * 1000) {
     return new Promise((resolve, reject) => {
       const [command, ...args] = cmd.split(/\s+/);
 

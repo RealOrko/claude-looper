@@ -37,7 +37,7 @@ export const DEFAULT_CONFIG = {
   model: 'claude-sonnet-4-20250514',
 
   // Temperature for responses
-  temperature: 0.7,
+  temperature: 0.2,
 
   // Maximum retries on API errors
   maxRetries: 3,
@@ -46,7 +46,7 @@ export const DEFAULT_CONFIG = {
   retryDelay: 5000,
 
   // Tool timeout (ms)
-  toolTimeout: 120000,
+  toolTimeout: 5 * 60 * 1000, // 5 minutes
 
   // Enable verbose logging
   verbose: false,
@@ -55,8 +55,8 @@ export const DEFAULT_CONFIG = {
   verification: {
     enabled: true,              // Whether to verify completion claims
     maxAttempts: 3,             // Max false claims before escalation
-    challengeTimeout: 60000,    // 60s for Claude to provide evidence
-    testTimeout: 120000,        // 2min for test execution
+    challengeTimeout: 5 * 60 * 1000,  // 5 min for Claude to provide evidence
+    testTimeout: 5 * 60 * 1000,       // 5 min for test execution
     requireArtifacts: true,     // Fail if no artifacts found for non-trivial goals
     runTests: true,             // Whether to actually run test commands
     testCommands: [             // Common test commands to try
@@ -65,12 +65,14 @@ export const DEFAULT_CONFIG = {
       'go test ./...',
       'cargo test',
       'make test',
+      'ctest',
     ],
     buildCommands: [            // Common build commands to try
       'npm run build',
       'go build ./...',
       'cargo build',
       'make',
+      'cmake --build .',
     ],
   },
 };
