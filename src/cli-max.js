@@ -116,6 +116,53 @@ function quietComplete(report) {
   }
 }
 
+// Verbose/debug mode handlers (no dashboard, plain text logs)
+function verboseProgress(data) {
+  console.log(`\n[PROGRESS] ${data.type || 'update'}`);
+  if (data.iteration) console.log(`  Iteration: ${data.iteration}`);
+  if (data.progress) console.log(`  Progress: ${JSON.stringify(data.progress)}`);
+  if (data.sessionId) console.log(`  Session: ${data.sessionId}`);
+}
+
+function verboseMessage(data) {
+  console.log(`\n[CLAUDE OUTPUT - Iteration ${data.iteration}]`);
+  console.log('─'.repeat(60));
+  console.log(data.content || '(no content)');
+  console.log('─'.repeat(60));
+}
+
+function verboseError(data) {
+  console.error(`\n[ERROR] ${data.error}`);
+  if (data.retry) console.error(`  Retry attempt: ${data.retry}`);
+}
+
+function verboseSupervision(data) {
+  const a = data.assessment || {};
+  console.log(`\n[SUPERVISION] Action: ${a.action || 'unknown'}, Score: ${a.score || 'N/A'}`);
+  if (a.reason) console.log(`  Reason: ${a.reason}`);
+  if (data.consecutiveIssues) console.log(`  Consecutive issues: ${data.consecutiveIssues}`);
+}
+
+function verboseEscalation(data) {
+  console.log(`\n[ESCALATION] Type: ${data.type}`);
+  if (data.message) console.log(`  Message: ${data.message}`);
+}
+
+function verboseVerification(data) {
+  console.log(`\n[VERIFICATION] Passed: ${data.passed}`);
+  if (data.layers) console.log(`  Layers: ${JSON.stringify(data.layers, null, 2)}`);
+}
+
+function verboseComplete(report) {
+  console.log(`\n${'═'.repeat(60)}`);
+  console.log(`[COMPLETE] Status: ${report.status}`);
+  console.log(`  Progress: ${report.goal?.progress || 0}%`);
+  console.log(`  Iterations: ${report.session?.iterations || 0}`);
+  console.log(`  Time: ${report.time?.elapsed || 'N/A'}`);
+  if (report.abortReason) console.log(`  Abort Reason: ${report.abortReason}`);
+  console.log('═'.repeat(60));
+}
+
 async function checkClaudeCodeInstalled() {
   const { exec } = await import('child_process');
   const { promisify } = await import('util');
@@ -188,6 +235,18 @@ async function main() {
       onEscalation: jsonEscalation,
       onVerification: jsonVerification,
       onComplete: jsonComplete,
+    };
+  } else if (values.quiet && values.verbose) {
+    // Verbose debug mode - plain text logs, no dashboard
+    console.log('[DEBUG MODE] Verbose logging enabled without dashboard\n');
+    handlers = {
+      onProgress: verboseProgress,
+      onMessage: verboseMessage,
+      onError: verboseError,
+      onSupervision: verboseSupervision,
+      onEscalation: verboseEscalation,
+      onVerification: verboseVerification,
+      onComplete: verboseComplete,
     };
   } else if (values.quiet) {
     // Quiet mode - minimal output

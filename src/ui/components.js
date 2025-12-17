@@ -185,11 +185,27 @@ export class Box {
     const innerWidth = width - 2 - (this.padding * 2);
     const paddingStr = ' '.repeat(this.padding);
 
-    // Wrap/truncate lines
+    // Wrap lines to fit within box
     const wrappedLines = [];
     for (const line of lines) {
-      if (stripAnsi(line).length > innerWidth) {
-        wrappedLines.push(truncate(line, innerWidth));
+      const plainLine = stripAnsi(line);
+      if (plainLine.length > innerWidth) {
+        // Word-wrap long lines
+        const words = plainLine.split(' ');
+        let currentLine = '';
+        for (const word of words) {
+          if (currentLine.length === 0) {
+            currentLine = word;
+          } else if (currentLine.length + 1 + word.length <= innerWidth) {
+            currentLine += ' ' + word;
+          } else {
+            wrappedLines.push(padEnd(currentLine, innerWidth));
+            currentLine = word;
+          }
+        }
+        if (currentLine.length > 0) {
+          wrappedLines.push(padEnd(currentLine, innerWidth));
+        }
       } else {
         wrappedLines.push(padEnd(line, innerWidth));
       }

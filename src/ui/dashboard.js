@@ -12,13 +12,13 @@ import {
 } from './components.js';
 
 const LOGO = `
-   ██████╗██╗      █████╗ ██╗   ██╗██████╗ ███████╗
-  ██╔════╝██║     ██╔══██╗██║   ██║██╔══██╗██╔════╝
-  ██║     ██║     ███████║██║   ██║██║  ██║█████╗
-  ██║     ██║     ██╔══██║██║   ██║██║  ██║██╔══╝
-  ╚██████╗███████╗██║  ██║╚██████╔╝██████╔╝███████╗
-   ╚═════╝╚══════╝╚═╝  ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝
-       ${colors.gray}A U T O N O M O U S   R U N N E R${style.reset}`;
+   ██████╗ ██╗      █████╗ ██╗   ██╗ ██████╗  ███████╗
+  ██╔════╝ ██║     ██╔══██╗██║   ██║ ██╔══██╗ ██╔════╝
+  ██║      ██║     ███████║██║   ██║ ██║  ██║ █████╗
+  ██║      ██║     ██╔══██║██║   ██║ ██║  ██║ ██╔══╝
+  ╚██████╗ ███████╗██║  ██║╚██████╔╝ ██████╔╝ ███████╗
+   ╚═════╝ ╚══════╝╚═╝  ╚═╝ ╚═════╝  ╚═════╝  ╚══════╝
+        ${colors.gray}A U T O N O M O U S   R U N N E R${style.reset}`;
 
 const MINI_LOGO = `${colors.cyan}${style.bold}◆ CLAUDE${style.reset} ${colors.gray}AUTONOMOUS${style.reset}`;
 
@@ -109,7 +109,7 @@ export class Dashboard {
     const width = screen.width();
 
     // Gradient logo
-    const logoLines = LOGO.trim().split('\n');
+    const logoLines = LOGO.trimEnd().split('\n').filter(line => line.length > 0);
     logoLines.forEach((line, i) => {
       const colorCode = gradient.cool((i / logoLines.length) * 100);
       console.log(`${colorCode}${line}${style.reset}`);

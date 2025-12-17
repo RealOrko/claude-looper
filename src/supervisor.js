@@ -146,9 +146,11 @@ REASON: [one sentence summary]`;
 
     try {
       // Use separate session for supervisor (doesn't pollute worker conversation)
+      // Use haiku model for fast, cheap assessments
       const result = await this.client.sendPrompt(prompt, {
         newSession: true,
         timeout: 5 * 60 * 1000, // 5 min timeout for assessment
+        model: 'haiku', // Fast, cheap model for supervision
       });
 
       const assessment = this.parseAssessment(result.response);

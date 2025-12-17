@@ -18,6 +18,7 @@ export class AutonomousRunnerCLI {
       cwd: options.workingDirectory || process.cwd(),
       skipPermissions: true,
       verbose: options.verbose || false,
+      model: 'sonnet', // Use Sonnet for worker
     });
 
     this.goalTracker = null;
@@ -103,7 +104,14 @@ Begin immediately.`;
 
     // Initialize components
     this.goalTracker = new GoalTracker(primaryGoal, subGoals);
-    this.supervisor = new Supervisor(this.client, this.goalTracker, this.config);
+
+    // Create separate client for supervisor to avoid session ID conflicts
+    this.supervisorClient = new ClaudeCodeClient({
+      cwd: workingDirectory,
+      skipPermissions: true,
+      verbose: false, // Supervisor doesn't need verbose output
+    });
+    this.supervisor = new Supervisor(this.supervisorClient, this.goalTracker, this.config);
     this.phaseManager = new PhaseManager(
       this.config.getTimeLimit(timeLimit),
       this.config
@@ -155,11 +163,13 @@ Begin immediately.`;
    * Run a single iteration
    */
   async runIteration() {
-    this.iterationCount++;
     let prompt;
     let supervisionResult = null;
 
-    if (this.iterationCount === 1) {
+    // Check if this is the first iteration (no session yet)
+    const isFirstIteration = !this.client.hasActiveSession();
+
+    if (isFirstIteration) {
       // First iteration - start new session with full context
       const systemContext = this.buildSystemContext(
         this.primaryGoal,
@@ -270,6 +280,9 @@ Begin immediately.`;
    * Process Claude's response
    */
   processResponse(result, supervisionResult) {
+    // Increment iteration count on successful response
+    this.iterationCount++;
+
     const response = result.response || '';
 
     // Extract and store recent actions

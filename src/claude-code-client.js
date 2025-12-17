@@ -16,6 +16,7 @@ export class ClaudeCodeClient extends EventEmitter {
       timeout: options.timeout || 10 * 60 * 1000, // 10 minute default timeout
       skipPermissions: options.skipPermissions !== false, // Default true for autonomous mode
       verbose: options.verbose || false,
+      model: options.model || null, // Default model for all requests
     };
 
     this.sessionId = null;
@@ -42,6 +43,7 @@ export class ClaudeCodeClient extends EventEmitter {
         cwd: this.options.cwd,
         env: { ...process.env },
         timeout: options.timeout || this.options.timeout,
+        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin to prevent blocking on prompts
       });
 
       proc.stdout.on('data', (data) => {
@@ -131,9 +133,10 @@ export class ClaudeCodeClient extends EventEmitter {
       args.push('--dangerously-skip-permissions');
     }
 
-    // Model override if specified
-    if (options.model) {
-      args.push('--model', options.model);
+    // Model override if specified (per-call or default)
+    const model = options.model || this.options.model;
+    if (model) {
+      args.push('--model', model);
     }
 
     // Max turns if specified

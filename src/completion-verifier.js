@@ -78,8 +78,8 @@ export class CompletionVerifier {
         this.verificationHistory.push(result);
         return result;
       }
-    } else if (verifyConfig.requireArtifacts) {
-      // No files mentioned but artifacts required
+    } else if (verifyConfig.requireArtifacts && !this.isReadOnlyTask(result.evidence)) {
+      // No files mentioned but artifacts required (and not a read-only task)
       result.layers.artifacts = { passed: false, verified: [], missing: [], empty: [] };
       result.failures.push('No file artifacts mentioned - completion claim lacks evidence');
       this.verificationHistory.push(result);
@@ -304,10 +304,43 @@ Provide your evidence now:`;
   }
 
   /**
+   * Detect if this is a read-only/analysis task based on evidence response
+   */
+  isReadOnlyTask(evidence) {
+    const raw = (evidence.raw || '').toLowerCase();
+    const readOnlyIndicators = [
+      'no files were created',
+      'no files were modified',
+      'read-only',
+      'analysis task',
+      'counting task',
+      'none - this was',
+      '**none**',
+      'none.',
+      'did not create',
+      'did not modify',
+      'only ran commands',
+      'only executed',
+    ];
+    return readOnlyIndicators.some(indicator => raw.includes(indicator));
+  }
+
+  /**
    * Evaluate if evidence is sufficient
    */
   evaluateEvidence(evidence) {
-    // Must have at least some files mentioned
+    // Check if this is a read-only/analysis task
+    const isReadOnly = this.isReadOnlyTask(evidence);
+
+    if (isReadOnly) {
+      // For read-only tasks, require code snippets showing commands/output OR sub-goal confirmations
+      const hasEvidence =
+        evidence.codeSnippets.length > 0 ||
+        evidence.subGoalConfirmations > 0;
+      return hasEvidence;
+    }
+
+    // For file-creating tasks, must have files mentioned
     if (evidence.files.length === 0) {
       return false;
     }
@@ -491,6 +524,7 @@ Provide your evidence now:`;
         cwd,
         shell: true,
         timeout,
+        stdio: ['ignore', 'pipe', 'pipe'], // Close stdin to prevent blocking on prompts
       });
 
       let stdout = '';
