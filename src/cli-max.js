@@ -305,8 +305,8 @@ async function runInDocker(args) {
     '-it',
     // Mount current directory as workspace
     '-v', `${cwd}:/home/claude/workspace`,
-    // Mount ~/.claude as readonly for credentials
-    '-v', `${claudeConfigDir}:/home/claude/.claude:ro`,
+    // Mount ~/.claude for credentials (read-write since Claude Code writes debug logs)
+    '-v', `${claudeConfigDir}:/home/claude/.claude`,
     // Set working directory
     '-w', '/home/claude/workspace',
     // Use the claude image
@@ -318,7 +318,7 @@ async function runInDocker(args) {
 
   log(`${icons.arrow} Running in docker container...`, 'cyan');
   log(`${colors.gray}  Mounting: ${cwd} -> /home/claude/workspace${style.reset}`);
-  log(`${colors.gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude (readonly)${style.reset}`);
+  log(`${colors.gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${style.reset}`);
   log('');
 
   const proc = spawn('docker', dockerArgs, {
