@@ -13,6 +13,7 @@ export { Planner } from './planner.js';
 
 // Runners
 export { AutonomousRunnerCLI } from './autonomous-runner-cli.js';
+export { RetryableAutonomousRunner } from './retryable-runner.js';
 export { ClaudeCodeClient } from './claude-code-client.js';
 
 // Default export

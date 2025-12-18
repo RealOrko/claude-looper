@@ -8,6 +8,7 @@
  */
 
 import { AutonomousRunnerCLI } from './autonomous-runner-cli.js';
+import { RetryableAutonomousRunner } from './retryable-runner.js';
 import { parseArgs } from 'util';
 import { InkDashboard } from './ui/ink-dashboard.js';
 import { colors, style, icons } from './ui/terminal.js';
@@ -31,6 +32,8 @@ ${colors.white}${style.bold}OPTIONS:${style.reset}
   ${colors.green}-v, --verbose${style.reset}            Enable verbose logging (shows Claude's full output)
   ${colors.green}-q, --quiet${style.reset}              Minimal output (only errors and final report)
   ${colors.green}-j, --json${style.reset}               Output progress as JSON
+  ${colors.green}-r, --retry${style.reset}              Enable retry loop (continues until HIGH confidence)
+  ${colors.green}--max-retries${style.reset} <n>        Maximum retry attempts [default: 100]
   ${colors.green}-h, --help${style.reset}               Show this help message
   ${colors.green}--version${style.reset}                Show version number
   ${colors.green}--docker${style.reset}                 Run inside the claude docker container
@@ -51,6 +54,9 @@ ${colors.white}${style.bold}EXAMPLES:${style.reset}
 
   ${colors.gray}# Run in docker container (mounts current dir and ~/.claude for auth)${style.reset}
   ${colors.cyan}claude-auto${style.reset} --docker "Build a REST API"
+
+  ${colors.gray}# Retry until HIGH confidence achieved (up to 5 attempts)${style.reset}
+  ${colors.cyan}claude-auto${style.reset} -r --max-retries 5 -t 4h "Build and test a REST API"
 
 ${colors.white}${style.bold}REQUIREMENTS:${style.reset}
   ${icons.arrow} Claude Code CLI must be installed and authenticated
@@ -191,6 +197,35 @@ function verboseProgress(data) {
     console.log(`  ✓ FINAL VERIFICATION PASSED`);
   } else if (data.type === 'final_verification_failed') {
     console.log(`  ✗ FINAL VERIFICATION FAILED: ${data.reason || 'see report'}`);
+  } else if (data.type === 'retry_loop_started') {
+    console.log(`\n[RETRY MODE] Max attempts: ${data.maxAttempts}, Time limit: ${Math.round(data.overallTimeLimit / 60000)}m`);
+  } else if (data.type === 'attempt_starting') {
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`[ATTEMPT ${data.attemptNumber}/${data.maxAttempts}] Starting...`);
+    console.log(`  Time remaining: ${Math.round(data.timeRemaining / 60000)}m`);
+    console.log(`  Time budget for attempt: ${Math.round(data.timeLimitForAttempt / 60000)}m`);
+    if (data.hasFailureContext) {
+      console.log(`  Building on previous attempt(s)`);
+    }
+  } else if (data.type === 'attempt_completed') {
+    const icon = data.confidence === 'HIGH' ? '✓' : data.passed ? '◐' : '✗';
+    console.log(`\n[ATTEMPT ${data.attemptNumber}] ${icon} Completed`);
+    console.log(`  Status: ${data.status}, Confidence: ${data.confidence}`);
+    console.log(`  Steps: ${data.completedSteps} completed, ${data.failedSteps} failed`);
+    console.log(`  Duration: ${Math.round(data.duration / 1000)}s`);
+    if (data.willRetry) {
+      console.log(`  → Will retry (confidence not HIGH)`);
+    }
+  } else if (data.type === 'retry_loop_completed') {
+    console.log(`\n${'═'.repeat(60)}`);
+    console.log(`[RETRY LOOP COMPLETE]`);
+    console.log(`  Total attempts: ${data.totalAttempts}`);
+    console.log(`  Final confidence: ${data.finalConfidence}`);
+    console.log(`  Success: ${data.overallSuccess ? 'Yes' : 'No'}`);
+    console.log(`  Total duration: ${Math.round(data.totalDuration / 1000)}s`);
+  } else if (data.type === 'time_exhausted') {
+    console.log(`\n[TIME EXHAUSTED] No time for more attempts`);
+    console.log(`  Completed ${data.totalAttempts} attempt(s)`);
   } else {
     if (data.iteration) console.log(`  Iteration: ${data.iteration}`);
     if (data.planProgress) console.log(`  Plan: ${data.planProgress.current}/${data.planProgress.total} steps`);
@@ -347,6 +382,8 @@ async function main() {
       verbose: { type: 'boolean', short: 'v', default: false },
       quiet: { type: 'boolean', short: 'q', default: false },
       json: { type: 'boolean', short: 'j', default: false },
+      retry: { type: 'boolean', short: 'r', default: false },
+      'max-retries': { type: 'string', default: '100' },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', default: false },
       docker: { type: 'boolean', default: false },
@@ -391,7 +428,7 @@ async function main() {
   // Determine primary goal
   const primaryGoal = values.goal || positionals[0];
   if (!primaryGoal) {
-    log(`${icons.error} Error: No goal specified.`, 'red');
+    log(`${icons.error} Missing required argument: goal`, 'red');
     log('Usage: claude-auto "Your goal here"', 'dim');
     log('Run with --help for more options.', 'dim');
     process.exit(1);
@@ -456,15 +493,26 @@ async function main() {
     };
   }
 
-  // Create runner
-  const runner = new AutonomousRunnerCLI({
-    workingDirectory: values.directory,
-    verbose: values.verbose,
-    config: {
-      verbose: values.verbose,
-    },
-    ...handlers,
-  });
+  // Create runner (use RetryableAutonomousRunner if --retry flag is set)
+  const runner = values.retry
+    ? new RetryableAutonomousRunner({
+        workingDirectory: values.directory,
+        verbose: values.verbose,
+        timeLimit: values['time-limit'],
+        maxAttempts: parseInt(values['max-retries'], 10) || 100,
+        config: {
+          verbose: values.verbose,
+        },
+        ...handlers,
+      })
+    : new AutonomousRunnerCLI({
+        workingDirectory: values.directory,
+        verbose: values.verbose,
+        config: {
+          verbose: values.verbose,
+        },
+        ...handlers,
+      });
 
   // Handle graceful shutdown
   let shuttingDown = false;
