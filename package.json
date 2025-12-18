@@ -13,7 +13,7 @@
     "test:watch": "vitest",
     "test:agents": "vitest run src/agents/tests",
     "docker:build": "docker build -t claude .",
-    "build": "cd src/web && npm run build",
+    "build": "cd src/web && npm run build && cd ../.. && docker build -t claude .",
     "build:web": "cd src/web && npm run build",
     "dev:web": "cd src/web && npm run dev"
   },
