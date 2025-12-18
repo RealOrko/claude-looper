@@ -9,7 +9,13 @@
   },
   "scripts": {
     "start": "node src/cli-max.js",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:agents": "vitest run src/agents/tests",
     "docker:build": "docker build -t claude ."
+  },
+  "devDependencies": {
+    "vitest": "^2.1.0"
   },
   "dependencies": {
     "glob": "^10.3.0",
