@@ -11,6 +11,9 @@
 - 🔀 **Sub-plan Retry**: Blocked steps trigger alternative approach planning
 - 🎯 **Final Verification**: Goal achievement verified with smoke tests
 - 🐳 **Docker Support**: Run in isolated container with credential mounting
+- 💾 **State Persistence**: Save and resume sessions across restarts
+- 🌐 **Web UI**: Real-time visualization dashboard for monitoring progress
+- 🔁 **Retry Mode**: Automatically retry until HIGH confidence is achieved
 
 ## 📦 Installation
 
@@ -49,6 +52,24 @@ claude-auto --docker "Build a REST API" -t 4h
 
 # Verbose mode (shows Claude's full output)
 claude-auto -v "Refactor the codebase"
+
+# Retry until HIGH confidence achieved
+claude-auto -r --max-retries 5 -t 4h "Build and test a REST API"
+
+# Enable web UI for visualization
+claude-auto --ui "Build a REST API"
+
+# Web UI on custom port
+claude-auto --ui --ui-port 8080 "Build a REST API"
+
+# Resume a previous session (interactive selection)
+claude-auto --resume
+
+# Resume a specific session by ID
+claude-auto --resume mjbxfnxx_b4c8b44c715c
+
+# List all available sessions
+claude-auto --list-sessions
 ```
 
 ## 🐳 Docker Support
@@ -68,6 +89,64 @@ The container:
 - 🔑 Mounts `~/.claude` for authentication
 - 🛠️ Includes Python 3.12, Go 1.22, Node.js 20, and build tools
 
+## 💾 State Persistence & Resume
+
+Sessions are automatically saved and can be resumed if interrupted:
+
+```bash
+# List all saved sessions
+claude-auto --list-sessions
+
+# Resume interactively (shows session picker)
+claude-auto --resume
+
+# Resume a specific session by ID
+claude-auto --resume abc123_def456
+```
+
+Session state includes:
+- 📋 Current plan and step progress
+- 💬 Conversation history
+- ⏱️ Time remaining
+- 📊 Metrics and verification results
+
+Sessions are stored in `.claude-runner/` by default (configurable with `--state-dir`).
+
+## 🌐 Web UI
+
+Real-time visualization dashboard for monitoring autonomous execution:
+
+```bash
+# Enable web UI (default port 3000)
+claude-auto --ui "Build a REST API"
+
+# Custom port
+claude-auto --ui --ui-port 8080 "Build a REST API"
+```
+
+The web UI shows:
+- 📊 Real-time progress and step status
+- 💬 Live output from Claude
+- 👁️ Supervision events and corrections
+- 📈 Performance metrics
+
+## 🔁 Retry Mode
+
+Automatically retry execution until HIGH confidence is achieved:
+
+```bash
+# Retry up to 5 times
+claude-auto -r --max-retries 5 "Build and test a REST API"
+
+# Default: up to 100 retries
+claude-auto -r "Implement feature X"
+```
+
+Each retry:
+- 🔄 Restarts with fresh context
+- 📋 Re-plans based on previous attempt
+- ✅ Continues until HIGH confidence or max retries reached
+
 ## ⚙️ CLI Options
 
 | Option | Short | Description | Default |
@@ -81,6 +160,13 @@ The container:
 | `--quiet` | `-q` | Minimal output | false |
 | `--json` | `-j` | JSON output | false |
 | `--docker` | - | Run in Docker container | false |
+| `--retry` | `-r` | Enable retry loop (until HIGH confidence) | false |
+| `--max-retries` | - | Maximum retry attempts | 100 |
+| `--resume` | `-R` | Resume a previous session | - |
+| `--list-sessions` | - | List all available sessions | - |
+| `--state-dir` | - | Directory for session state | .claude-runner |
+| `--ui` | - | Enable web UI for visualization | false |
+| `--ui-port` | - | Port for web UI | 3000 |
 
 ## 🔄 How It Works
 
@@ -170,10 +256,32 @@ src/
 ├── phase-manager.js         # ⏱️ Time & phase management
 ├── config.js                # ⚙️ Configuration
 ├── index.js                 # 📦 Module exports
-└── ui/
-    ├── ink-dashboard.js     # 🎨 React-based terminal UI
-    ├── dashboard.js         # 📺 Alternative dashboard
-    └── terminal.js          # 🖥️ Terminal utilities
+├── retryable-runner.js      # 🔁 Retry loop wrapper
+├── state-persistence.js     # 💾 Session save/restore
+├── context-manager.js       # 📝 Context window management
+├── error-recovery.js        # 🛠️ Error handling & recovery
+├── performance-metrics.js   # 📈 Performance tracking
+├── step-dependency-analyzer.js # 🔗 Step dependency analysis
+├── utils.js                 # 🧰 Utility functions
+├── ui/
+│   ├── ink-dashboard.js     # 🎨 React-based terminal UI
+│   ├── websocket-server.js  # 🌐 WebSocket server for web UI
+│   ├── dashboard.js         # 📺 Alternative dashboard
+│   ├── terminal.js          # 🖥️ Terminal utilities
+│   └── components.js        # 🧩 UI components
+├── web/                     # 🌐 Web UI (React/Vite)
+│   ├── src/
+│   │   ├── App.jsx          # Main application
+│   │   └── components/      # React components
+│   └── ...
+└── agents/                  # 🤖 Multi-agent architecture
+    ├── orchestrator.js      # 🎭 Agent coordinator
+    ├── planner-agent.js     # 📋 Planning agent
+    ├── coder-agent.js       # 💻 Code execution agent
+    ├── supervisor-agent.js  # 👁️ Supervision agent
+    ├── tester-agent.js      # 🧪 Testing agent
+    ├── message-bus.js       # 📨 Inter-agent messaging
+    └── interfaces.js        # 📜 Agent interfaces
 ```
 
 ## ⚙️ Configuration
