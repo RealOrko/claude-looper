@@ -174,6 +174,33 @@ export class PerformanceMetrics {
   }
 
   /**
+   * Record parallel execution results
+   */
+  recordParallelExecution(batchSize, results) {
+    this.recordParallelBatch(batchSize);
+
+    // Calculate speedup: sum of individual durations / max duration
+    const durations = results.filter(r => r.duration).map(r => r.duration);
+    if (durations.length > 1) {
+      const sumSerial = durations.reduce((a, b) => a + b, 0);
+      const maxParallel = Math.max(...durations);
+      const speedup = sumSerial / maxParallel;
+      this.efficiency.parallelSpeedup = Math.max(this.efficiency.parallelSpeedup, speedup);
+    }
+
+    // Record individual step completions
+    for (const result of results) {
+      if (result.step && result.duration) {
+        const status = result.success ? 'completed' : result.blocked ? 'blocked' : 'unclear';
+        this.recordStepExecution(result.step.number, status, result.duration, {
+          wasParallel: true,
+          complexity: result.step.complexity,
+        });
+      }
+    }
+  }
+
+  /**
    * Record supervision check
    */
   recordSupervision(result, duration) {

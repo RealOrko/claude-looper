@@ -10,6 +10,25 @@
 
 import { StepDependencyAnalyzer } from './step-dependency-analyzer.js';
 
+// Complexity patterns for smarter initial estimation
+const COMPLEXITY_PATTERNS = {
+  simple: [
+    /^read|^check|^verify|^list|^show|^display|^log|^print/i,
+    /add.*comment|add.*log|update.*version|rename/i,
+    /simple.*change|minor.*update|quick.*fix/i,
+  ],
+  complex: [
+    /refactor|redesign|rewrite|overhaul|migrate/i,
+    /implement.*from.*scratch|build.*new|create.*system/i,
+    /integrate.*with|connect.*to.*external/i,
+    /optimize.*performance|improve.*algorithm/i,
+    /test.*coverage|comprehensive.*test/i,
+    /multiple.*files|across.*codebase/i,
+    /security|authentication|authorization/i,
+    /database.*schema|data.*migration/i,
+  ],
+};
+
 export class Planner {
   constructor(client) {
     this.client = client;
@@ -29,6 +48,73 @@ export class Planner {
     this.parallelMode = false;
     this.inProgressSteps = new Set(); // Steps currently being executed
     this.completedStepNumbers = [];
+
+    // Complexity learning - track actual vs estimated complexity
+    this.complexityHistory = [];
+  }
+
+  /**
+   * Estimate step complexity based on description patterns
+   */
+  estimateComplexity(description) {
+    const desc = description.toLowerCase();
+
+    // Check for complex patterns first
+    for (const pattern of COMPLEXITY_PATTERNS.complex) {
+      if (pattern.test(desc)) return 'complex';
+    }
+
+    // Check for simple patterns
+    for (const pattern of COMPLEXITY_PATTERNS.simple) {
+      if (pattern.test(desc)) return 'simple';
+    }
+
+    // Default to medium
+    return 'medium';
+  }
+
+  /**
+   * Refine complexity based on historical data
+   */
+  refineComplexity(estimatedComplexity, description) {
+    if (this.complexityHistory.length < 5) {
+      return estimatedComplexity; // Not enough data
+    }
+
+    // Find similar past steps
+    const words = new Set(description.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+    const similar = this.complexityHistory.filter(entry => {
+      const entryWords = new Set(entry.description.toLowerCase().split(/\s+/).filter(w => w.length > 4));
+      const overlap = [...words].filter(w => entryWords.has(w)).length;
+      return overlap >= 2; // At least 2 significant words in common
+    });
+
+    if (similar.length === 0) return estimatedComplexity;
+
+    // Calculate average actual complexity from similar steps
+    const avgDuration = similar.reduce((sum, e) => sum + e.duration, 0) / similar.length;
+
+    // Adjust based on average duration
+    if (avgDuration > 10 * 60 * 1000) return 'complex';   // > 10 min
+    if (avgDuration < 2 * 60 * 1000) return 'simple';     // < 2 min
+    return 'medium';
+  }
+
+  /**
+   * Record completed step for learning
+   */
+  recordStepCompletion(step, duration) {
+    this.complexityHistory.push({
+      description: step.description,
+      estimatedComplexity: step.complexity,
+      duration,
+      timestamp: Date.now(),
+    });
+
+    // Keep only last 50 entries
+    if (this.complexityHistory.length > 50) {
+      this.complexityHistory = this.complexityHistory.slice(-50);
+    }
   }
 
   /**
@@ -134,10 +220,17 @@ TOTAL_STEPS: [N]`;
       if (inPlanSection) {
         const stepMatch = trimmed.match(/^(\d+)\.\s*(.+?)(?:\s*\|\s*(simple|medium|complex))?$/i);
         if (stepMatch) {
+          const description = stepMatch[2].trim();
+          // Use smart complexity estimation if not specified
+          let complexity = stepMatch[3]?.toLowerCase();
+          if (!complexity) {
+            complexity = this.estimateComplexity(description);
+            complexity = this.refineComplexity(complexity, description);
+          }
           plan.steps.push({
             number: parseInt(stepMatch[1], 10),
-            description: stepMatch[2].trim(),
-            complexity: (stepMatch[3] || 'medium').toLowerCase(),
+            description,
+            complexity,
             status: 'pending',
           });
         }
@@ -148,12 +241,17 @@ TOTAL_STEPS: [N]`;
     if (plan.steps.length === 0) {
       const numberedItems = response.match(/^\d+\.\s*.+$/gm);
       if (numberedItems) {
-        plan.steps = numberedItems.map((item, i) => ({
-          number: i + 1,
-          description: item.replace(/^\d+\.\s*/, '').replace(/\|.*$/, '').trim(),
-          complexity: 'medium',
-          status: 'pending',
-        }));
+        plan.steps = numberedItems.map((item, i) => {
+          const description = item.replace(/^\d+\.\s*/, '').replace(/\|.*$/, '').trim();
+          let complexity = this.estimateComplexity(description);
+          complexity = this.refineComplexity(complexity, description);
+          return {
+            number: i + 1,
+            description,
+            complexity,
+            status: 'pending',
+          };
+        });
       }
     }
 

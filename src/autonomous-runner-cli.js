@@ -25,6 +25,116 @@ import { PerformanceMetrics, AdaptiveOptimizer } from './performance-metrics.js'
 import { ErrorRecovery, RecoveryStrategy, ErrorCategory } from './error-recovery.js';
 import { StatePersistence } from './state-persistence.js';
 
+/**
+ * Parallel Step Executor - executes independent steps concurrently
+ */
+class ParallelStepExecutor {
+  constructor(runner) {
+    this.runner = runner;
+    this.maxParallel = 3; // Max concurrent step executions
+  }
+
+  /**
+   * Execute a batch of independent steps in parallel
+   */
+  async executeBatch(steps, workerClients) {
+    if (!steps || steps.length === 0) return [];
+
+    // If only one step, no parallelization needed
+    if (steps.length === 1) {
+      return [await this.executeStepWithClient(steps[0], this.runner.client)];
+    }
+
+    // Limit to max parallel and available clients
+    const batch = steps.slice(0, Math.min(this.maxParallel, workerClients.length));
+
+    this.runner.onProgress({
+      type: 'parallel_batch_started',
+      steps: batch.map(s => ({ number: s.number, description: s.description })),
+      count: batch.length,
+    });
+
+    // Mark all steps as in progress
+    for (const step of batch) {
+      this.runner.planner.markStepInProgress(step.number);
+    }
+
+    // Execute steps concurrently, each with its own client
+    const executions = batch.map((step, i) =>
+      this.executeStepWithClient(step, workerClients[i]).catch(error => ({
+        step,
+        success: false,
+        error: error.message,
+      }))
+    );
+
+    const results = await Promise.all(executions);
+
+    this.runner.onProgress({
+      type: 'parallel_batch_completed',
+      results: results.map(r => ({
+        stepNumber: r.step?.number,
+        success: r.success,
+        duration: r.duration,
+        error: r.error,
+      })),
+    });
+
+    return results;
+  }
+
+  /**
+   * Execute a single step with a specific client
+   */
+  async executeStepWithClient(step, client) {
+    const startTime = Date.now();
+
+    try {
+      const prompt = this.buildStepPrompt(step);
+      const result = await client.continueConversation(prompt);
+      const response = result.response || '';
+      const duration = Date.now() - startTime;
+
+      // Check for completion signals
+      const completeMatch = response.match(/STEP\s+(?:\d+\s+)?COMPLETE/i);
+      const blockedMatch = response.match(/STEP\s+(?:\d+\s+)?BLOCKED[:\s]*(.+?)(?:\n|$)/i);
+
+      if (completeMatch) {
+        this.runner.planner.completeStepByNumber(step.number);
+        this.runner.metrics.recordStepExecution(step.number, 'completed', duration, {
+          complexity: step.complexity,
+          parallel: true,
+        });
+        return { step, success: true, duration, response };
+      } else if (blockedMatch) {
+        const reason = blockedMatch[1]?.trim() || 'Unknown';
+        this.runner.planner.failStepByNumber(step.number, reason);
+        this.runner.metrics.recordStepExecution(step.number, 'blocked', duration, { reason });
+        return { step, success: false, blocked: true, reason, duration, response };
+      }
+
+      // No clear signal - return unclear status
+      return { step, success: false, unclear: true, duration, response };
+    } catch (error) {
+      this.runner.planner.failStepByNumber(step.number, error.message);
+      return { step, success: false, error: error.message, duration: Date.now() - startTime };
+    }
+  }
+
+  /**
+   * Build prompt for step execution
+   */
+  buildStepPrompt(step) {
+    return `## Execute Step ${step.number}: ${step.description}
+Complexity: ${step.complexity}
+
+Focus exclusively on this step. When complete, say "STEP COMPLETE".
+If blocked, say "STEP BLOCKED: [reason]".
+
+Begin now.`;
+  }
+}
+
 export class AutonomousRunnerCLI {
   constructor(options = {}) {
     this.config = new Config(options.config);
@@ -74,6 +184,10 @@ export class AutonomousRunnerCLI {
     // Adaptive execution optimizer
     this.adaptiveOptimizer = new AdaptiveOptimizer();
     this.currentExecutionProfile = null;
+
+    // Parallel step executor
+    this.parallelExecutor = new ParallelStepExecutor(this);
+    this.parallelWorkerClients = []; // Additional clients for parallel execution
 
     // Execution state
     this.iterationCount = 0;
@@ -220,6 +334,23 @@ Begin immediately.`;
 
     // Update client working directory
     this.client.options.cwd = workingDirectory;
+
+    // Create additional worker clients for parallel execution
+    const parallelConfig = this.config.get('parallelExecution') || {};
+    const maxParallel = parallelConfig.maxWorkers || 2;
+    if (parallelConfig.enabled !== false && maxParallel > 1) {
+      for (let i = 1; i < maxParallel; i++) {
+        this.parallelWorkerClients.push(
+          ClaudeCodeClient.createWorkerClient({
+            cwd: workingDirectory,
+            verbose: false,
+            model: modelConfig.worker || 'opus',
+            fallbackModel: modelConfig.workerFallback || 'sonnet',
+            maxRetries: retryConfig.maxRetries || 3,
+          })
+        );
+      }
+    }
 
     // Store for later use
     this.primaryGoal = primaryGoal;
@@ -742,6 +873,43 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
                 subtasks: decomposition.subtasks,
                 parallelSafe: decomposition.parallelSafe,
               });
+            }
+          }
+        }
+
+        // Check for parallel execution opportunities
+        const parallelConfig = this.config.get('parallelExecution') || {};
+        if (parallelConfig.enabled !== false && this.parallelWorkerClients.length > 0) {
+          const parallelBatch = this.planner.getNextExecutableBatch();
+
+          if (parallelBatch.length > 1) {
+            // Execute steps in parallel
+            const allClients = [this.client, ...this.parallelWorkerClients];
+            const batchResults = await this.parallelExecutor.executeBatch(
+              parallelBatch,
+              allClients.slice(0, parallelBatch.length)
+            );
+
+            // Record metrics for parallel execution
+            this.metrics.recordParallelExecution(parallelBatch.length, batchResults);
+
+            // Check if any steps need follow-up
+            const unclearResults = batchResults.filter(r => r.unclear);
+            if (unclearResults.length > 0) {
+              // Some steps didn't give clear completion signals - continue normally
+              this.onProgress({
+                type: 'parallel_steps_unclear',
+                steps: unclearResults.map(r => r.step?.number),
+              });
+            }
+
+            // If all parallel steps completed, skip to next iteration
+            const allComplete = batchResults.every(r => r.success || r.blocked);
+            if (allComplete) {
+              // Adaptive delay and continue
+              const delay = this.getAdaptiveDelay(true);
+              await this.sleep(delay);
+              continue; // Skip normal iteration - parallel batch handled it
             }
           }
         }
