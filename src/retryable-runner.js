@@ -1,7 +1,7 @@
 /**
  * Retryable Autonomous Runner
  * Wraps AutonomousRunnerCLI in an outer retry loop that continues
- * until HIGH confidence is achieved or timeout expires.
+ * until HIGH confidence success or timeout expires.
  */
 
 import { AutonomousRunnerCLI } from './autonomous-runner-cli.js';
@@ -63,7 +63,7 @@ export class RetryableAutonomousRunner {
   }
 
   /**
-   * Main retry loop - runs until HIGH confidence or timeout
+   * Main retry loop - runs until HIGH confidence success or timeout
    */
   async run() {
     this.isRunning = true;
@@ -270,8 +270,9 @@ export class RetryableAutonomousRunner {
       return this.hasTimeRemaining();
     }
 
-    // Never retry if HIGH confidence achieved
-    if (report.finalVerification?.goalVerification?.confidence === 'HIGH') {
+    // Only stop if HIGH confidence AND goal was actually achieved
+    const fv = report.finalVerification;
+    if (fv?.confidence === 'HIGH' && fv?.goalAchieved) {
       return false;
     }
 
