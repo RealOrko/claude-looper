@@ -1,0 +1,23 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd initial project files and configuration\n\n- Add package.json with project dependencies and scripts\n- Add source files for Claude autonomous runner CLI\n- Add README documentation\n- Add .gitignore for Node.js project\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(node:*)",
+      "Bash(git remote add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(cat:*)",
+      "Bash(npm install:*)",
+      "Bash(npm uninstall:*)",
+      "Bash(wc:*)",
+      "Bash(grep:*)",
+      "Bash(npm link)",
+      "Bash(claude-auto:*)",
+      "Bash(npm run docker:build:*)",
+      "Bash(docker run:*)",
+      "Bash(ls:*)",
+      "Bash(npm test:*)"
+    ]
+  }
+}
