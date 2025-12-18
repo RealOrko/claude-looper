@@ -24,6 +24,7 @@ import { ContextManager } from './context-manager.js';
 import { PerformanceMetrics, AdaptiveOptimizer } from './performance-metrics.js';
 import { ErrorRecovery, RecoveryStrategy, ErrorCategory } from './error-recovery.js';
 import { StatePersistence } from './state-persistence.js';
+import { isTruthy, isFalsy, isInconclusive } from './utils.js';
 
 /**
  * Parallel Step Executor - executes independent steps concurrently
@@ -1589,18 +1590,19 @@ YOUR TASK: Address the gaps and complete the goal. Focus on what's missing.`;
         // - achieved === false: goal verified as NOT achieved
         // - achieved === null: verification inconclusive (timeout/error)
         //   In this case, if smoke tests pass and most steps completed, consider it likely passed
-        const verificationInconclusive = goalVerification.achieved === null;
+        const verificationInconclusive = isInconclusive(goalVerification.achieved);
         const stepProgress = this.planner.getProgress();
         const mostStepsCompleted = stepProgress.percentComplete >= 70;
 
         // Calculate overall result
+        // Note: goalVerification.achieved can be string ('YES'/'NO'/'PARTIAL'), boolean, or null
         let overallPassed;
-        if (goalVerification.achieved === true) {
+        if (isTruthy(goalVerification.achieved)) {
           overallPassed = smokeTests.passed;
-        } else if (goalVerification.achieved === false) {
+        } else if (isFalsy(goalVerification.achieved)) {
           overallPassed = false;
         } else {
-          // Verification inconclusive - rely on smoke tests + step completion
+          // PARTIAL or verification inconclusive - rely on smoke tests + step completion
           overallPassed = smokeTests.passed && mostStepsCompleted;
         }
 
