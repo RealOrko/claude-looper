@@ -1,7 +1,14 @@
 /**
  * Planner - Has Claude analyze a goal and create an execution plan
  * Minimizes human input by letting Claude figure out the steps
+ *
+ * Enhanced with:
+ * - Step dependency analysis for parallel execution
+ * - Smart batching of independent steps
+ * - Critical path identification
  */
+
+import { StepDependencyAnalyzer } from './step-dependency-analyzer.js';
 
 export class Planner {
   constructor(client) {
@@ -14,44 +21,39 @@ export class Planner {
     this.subPlanStep = 0;
     this.subPlanParentStep = null; // The original step that was blocked
     this.subPlanAttempted = false; // Track if we already tried a sub-plan for current step
+
+    // Dependency analyzer for parallel execution
+    this.dependencyAnalyzer = new StepDependencyAnalyzer();
+
+    // Parallel execution state
+    this.parallelMode = false;
+    this.inProgressSteps = new Set(); // Steps currently being executed
+    this.completedStepNumbers = [];
   }
 
   /**
    * Build the planning prompt
+   * Optimized for speed and clarity
    */
   buildPlanningPrompt(goal, context, workingDirectory) {
-    return `You are a planning assistant. Analyze this goal and create a concrete execution plan.
+    // Use concise prompt for faster planning
+    const contextSection = context ? `Context: ${context}\n` : '';
 
-## GOAL
-${goal}
+    return `PLAN THIS GOAL: ${goal}
+${contextSection}Working dir: ${workingDirectory}
 
-${context ? `## ADDITIONAL CONTEXT\n${context}` : ''}
+Rules:
+- 3-10 concrete, actionable steps
+- Each step independently completable
+- Mark complexity: simple/medium/complex
 
-## WORKING DIRECTORY
-${workingDirectory}
-
-## YOUR TASK
-
-Create a step-by-step plan to achieve this goal. Each step should be:
-- Concrete and actionable (not vague)
-- Independently completable
-- In logical order
-- Estimated complexity (simple/medium/complex)
-
-First, briefly analyze what needs to be done (2-3 sentences).
-Then output your plan in EXACTLY this format:
-
-ANALYSIS: [Your brief analysis]
-
+Output EXACTLY:
+ANALYSIS: [1-2 sentence analysis]
 PLAN:
-1. [Step description] | [simple/medium/complex]
-2. [Step description] | [simple/medium/complex]
-3. [Step description] | [simple/medium/complex]
+1. [Step] | [complexity]
+2. [Step] | [complexity]
 ...
-
-TOTAL_STEPS: [number]
-
-Keep the plan to 3-10 steps. Combine trivial steps, split complex ones.`;
+TOTAL_STEPS: [N]`;
   }
 
   /**
@@ -66,6 +68,25 @@ Keep the plan to 3-10 steps. Combine trivial steps, split complex ones.`;
     });
 
     this.plan = this.parsePlan(result.response, goal);
+    return this.plan;
+  }
+
+  /**
+   * Restore a plan from saved state (for session resumption)
+   */
+  restorePlan(savedPlan, currentStep = 0) {
+    this.plan = savedPlan;
+    this.currentStep = currentStep;
+
+    // Restore step statuses
+    if (this.plan?.steps) {
+      for (let i = 0; i < currentStep && i < this.plan.steps.length; i++) {
+        if (!this.plan.steps[i].status) {
+          this.plan.steps[i].status = 'completed';
+        }
+      }
+    }
+
     return this.plan;
   }
 
@@ -137,7 +158,293 @@ Keep the plan to 3-10 steps. Combine trivial steps, split complex ones.`;
     }
 
     plan.totalSteps = plan.steps.length;
+
+    // Analyze dependencies and add parallel execution metadata
+    if (plan.steps.length > 0) {
+      plan.steps = this.dependencyAnalyzer.analyzeDependencies(plan.steps);
+      plan.executionStats = this.dependencyAnalyzer.getExecutionStats(plan.steps);
+    }
+
     return plan;
+  }
+
+  /**
+   * Enable parallel execution mode
+   */
+  enableParallelMode() {
+    this.parallelMode = true;
+  }
+
+  /**
+   * Disable parallel execution mode
+   */
+  disableParallelMode() {
+    this.parallelMode = false;
+  }
+
+  /**
+   * Get the next batch of steps that can be executed
+   * Returns array of steps (multiple if parallel execution enabled)
+   */
+  getNextExecutableBatch() {
+    if (!this.plan) return [];
+
+    // If in sub-plan, handle that first (no parallelization for sub-plans)
+    if (this.subPlan) {
+      const step = this.getCurrentStep();
+      return step ? [step] : [];
+    }
+
+    // Get completed step numbers
+    const completed = this.plan.steps
+      .filter(s => s.status === 'completed')
+      .map(s => s.number);
+
+    // If parallel mode disabled, return just the current step
+    if (!this.parallelMode) {
+      const step = this.getCurrentStep();
+      return step ? [step] : [];
+    }
+
+    // Get next batch of parallelizable steps
+    return this.dependencyAnalyzer.getNextParallelBatch(
+      this.plan.steps,
+      completed
+    );
+  }
+
+  /**
+   * Mark a step as in-progress (for parallel execution tracking)
+   */
+  markStepInProgress(stepNumber) {
+    this.inProgressSteps.add(stepNumber);
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) {
+      step.status = 'in_progress';
+      step.startTime = Date.now();
+    }
+  }
+
+  /**
+   * Complete a step by number (for parallel execution)
+   */
+  completeStepByNumber(stepNumber) {
+    this.inProgressSteps.delete(stepNumber);
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) {
+      step.status = 'completed';
+      step.endTime = Date.now();
+      step.duration = step.endTime - (step.startTime || step.endTime);
+      this.completedStepNumbers.push(stepNumber);
+    }
+
+    // Update currentStep to point to next incomplete step
+    this.updateCurrentStepPointer();
+  }
+
+  /**
+   * Fail a step by number (for parallel execution)
+   */
+  failStepByNumber(stepNumber, reason) {
+    this.inProgressSteps.delete(stepNumber);
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) {
+      step.status = 'failed';
+      step.failReason = reason;
+      step.endTime = Date.now();
+    }
+
+    this.updateCurrentStepPointer();
+  }
+
+  /**
+   * Update the current step pointer to next incomplete step
+   */
+  updateCurrentStepPointer() {
+    if (!this.plan) return;
+
+    for (let i = 0; i < this.plan.steps.length; i++) {
+      const step = this.plan.steps[i];
+      if (step.status === 'pending' || step.status === 'in_progress') {
+        this.currentStep = i;
+        return;
+      }
+    }
+
+    // All steps complete
+    this.currentStep = this.plan.steps.length;
+  }
+
+  /**
+   * Get number of steps currently in progress
+   */
+  getInProgressCount() {
+    return this.inProgressSteps.size;
+  }
+
+  /**
+   * Check if any steps are currently in progress
+   */
+  hasInProgressSteps() {
+    return this.inProgressSteps.size > 0;
+  }
+
+  /**
+   * Get execution statistics
+   */
+  getExecutionStats() {
+    return this.plan?.executionStats || null;
+  }
+
+  /**
+   * Automatically decompose complex steps into smaller subtasks
+   * Called when a step is too complex or taking too long
+   */
+  async decomposeComplexStep(step, workingDirectory) {
+    const prompt = `You are a planning assistant. Break down this complex step into smaller, more manageable subtasks.
+
+## ORIGINAL GOAL
+${this.plan.goal}
+
+## STEP TO DECOMPOSE
+Step ${step.number}: ${step.description}
+Complexity: ${step.complexity}
+
+## WORKING DIRECTORY
+${workingDirectory}
+
+## YOUR TASK
+
+This step is complex and should be broken into smaller pieces. Create 2-4 subtasks that:
+1. Are independently completable
+2. Can potentially run in parallel if they don't depend on each other
+3. Together fully accomplish the original step
+
+Output in EXACTLY this format:
+
+ANALYSIS: [Why this needs decomposition and your approach]
+
+SUBTASKS:
+1. [Subtask description] | [simple/medium]
+2. [Subtask description] | [simple/medium]
+...
+
+PARALLEL_SAFE: [YES/NO] - Can these subtasks run in parallel?`;
+
+    try {
+      const result = await this.client.sendPrompt(prompt, {
+        newSession: true,
+        timeout: 3 * 60 * 1000,
+      });
+
+      return this.parseDecomposition(result.response, step);
+    } catch (error) {
+      console.error('[Planner] Step decomposition failed:', error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Parse decomposition response into subtasks
+   */
+  parseDecomposition(response, parentStep) {
+    const subtasks = [];
+    const lines = response.split('\n');
+    let inSubtasksSection = false;
+    let parallelSafe = false;
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+
+      if (trimmed.startsWith('SUBTASKS:')) {
+        inSubtasksSection = true;
+        continue;
+      }
+
+      if (trimmed.startsWith('PARALLEL_SAFE:')) {
+        parallelSafe = trimmed.toUpperCase().includes('YES');
+        inSubtasksSection = false;
+        continue;
+      }
+
+      if (inSubtasksSection) {
+        const match = trimmed.match(/^(\d+)\.\s*(.+?)(?:\s*\|\s*(simple|medium))?$/i);
+        if (match) {
+          subtasks.push({
+            number: parentStep.number + (parseInt(match[1], 10) / 10), // e.g., 3.1, 3.2
+            description: match[2].trim(),
+            complexity: (match[3] || 'simple').toLowerCase(),
+            status: 'pending',
+            isSubtask: true,
+            parentStepNumber: parentStep.number,
+          });
+        }
+      }
+    }
+
+    if (subtasks.length === 0) return null;
+
+    return {
+      parentStep,
+      subtasks,
+      parallelSafe,
+      raw: response,
+    };
+  }
+
+  /**
+   * Inject decomposed subtasks into the plan
+   */
+  injectSubtasks(decomposition) {
+    if (!decomposition || !this.plan) return false;
+
+    const { parentStep, subtasks, parallelSafe } = decomposition;
+
+    // Find the parent step index
+    const parentIndex = this.plan.steps.findIndex(s => s.number === parentStep.number);
+    if (parentIndex === -1) return false;
+
+    // Mark parent as decomposed
+    this.plan.steps[parentIndex].status = 'decomposed';
+    this.plan.steps[parentIndex].decomposedInto = subtasks.map(s => s.number);
+
+    // Insert subtasks after parent
+    this.plan.steps.splice(parentIndex + 1, 0, ...subtasks);
+
+    // Update total steps
+    this.plan.totalSteps = this.plan.steps.length;
+
+    // Re-analyze dependencies if parallel safe
+    if (parallelSafe) {
+      this.plan.steps = this.dependencyAnalyzer.analyzeDependencies(this.plan.steps);
+      this.plan.executionStats = this.dependencyAnalyzer.getExecutionStats(this.plan.steps);
+    }
+
+    return true;
+  }
+
+  /**
+   * Check if a step should be decomposed based on complexity and time
+   */
+  shouldDecomposeStep(step, elapsedMs = 0) {
+    // Always decompose 'complex' steps that haven't started
+    if (step.complexity === 'complex' && step.status === 'pending') {
+      return true;
+    }
+
+    // Decompose if step is taking too long (> 10 minutes for medium, > 5 for simple)
+    const thresholds = {
+      simple: 5 * 60 * 1000,
+      medium: 10 * 60 * 1000,
+      complex: 15 * 60 * 1000,
+    };
+
+    const threshold = thresholds[step.complexity] || thresholds.medium;
+    if (elapsedMs > threshold && step.status === 'in_progress') {
+      return true;
+    }
+
+    return false;
   }
 
   /**
@@ -311,6 +618,29 @@ Keep to 2-5 steps. Be specific and actionable.`;
       this.plan.steps[this.currentStep].status = 'failed';
       this.plan.steps[this.currentStep].failReason = reason;
     }
+  }
+
+  /**
+   * Skip a step (mark as skipped and advance)
+   * Used by error recovery when a step cannot be completed
+   */
+  skipStep(stepNumber) {
+    if (!this.plan) return;
+
+    // Find and mark the step as skipped
+    const step = this.plan.steps.find(s => s.number === stepNumber);
+    if (step) {
+      step.status = 'skipped';
+      step.skippedAt = Date.now();
+    }
+
+    // If this is the current step, advance
+    if (this.currentStep < this.plan.steps.length &&
+        this.plan.steps[this.currentStep].number === stepNumber) {
+      this.currentStep++;
+    }
+
+    return this.getCurrentStep();
   }
 
   /**

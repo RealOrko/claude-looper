@@ -1,6 +1,16 @@
 /**
  * Autonomous Runner using Claude Code CLI
  * Uses your Max subscription - no API key required
+ *
+ * Enhanced with:
+ * - Specialized client factories for different agent roles
+ * - Adaptive iteration delays based on success/error
+ * - Parallel initialization
+ * - Model fallback support
+ * - Step dependency analysis for parallel execution
+ * - Intelligent context caching and token optimization
+ * - Advanced stall detection and automatic recovery
+ * - Comprehensive performance metrics
  */
 
 import { ClaudeCodeClient } from './claude-code-client.js';
@@ -10,16 +20,27 @@ import { PhaseManager } from './phase-manager.js';
 import { Config } from './config.js';
 import { CompletionVerifier } from './completion-verifier.js';
 import { Planner } from './planner.js';
+import { ContextManager } from './context-manager.js';
+import { PerformanceMetrics, AdaptiveOptimizer } from './performance-metrics.js';
+import { ErrorRecovery, RecoveryStrategy, ErrorCategory } from './error-recovery.js';
+import { StatePersistence } from './state-persistence.js';
 
 export class AutonomousRunnerCLI {
   constructor(options = {}) {
     this.config = new Config(options.config);
 
-    this.client = new ClaudeCodeClient({
+    // Get model configuration from config
+    const modelConfig = this.config.get('models') || {};
+    const retryConfig = this.config.get('retry') || {};
+
+    // Use specialized worker client with fallback support
+    this.client = ClaudeCodeClient.createWorkerClient({
       cwd: options.workingDirectory || process.cwd(),
-      skipPermissions: true,
       verbose: options.verbose || false,
-      model: 'opus', // Use Opus for worker
+      model: modelConfig.worker || 'opus',
+      fallbackModel: modelConfig.workerFallback || 'sonnet',
+      maxRetries: retryConfig.maxRetries || 3,
+      retryBaseDelay: retryConfig.baseDelay || 1000,
     });
 
     this.goalTracker = null;
@@ -27,6 +48,32 @@ export class AutonomousRunnerCLI {
     this.phaseManager = null;
     this.verifier = null;
     this.planner = null;
+    this.contextManager = new ContextManager();
+    this.metrics = new PerformanceMetrics();
+    this.errorRecovery = new ErrorRecovery({
+      baseDelay: retryConfig.baseDelay || 1000,
+      maxDelay: retryConfig.maxDelay || 60000,
+      maxRetries: retryConfig.maxRetries || 5,
+      circuitBreakerThreshold: retryConfig.circuitBreakerThreshold || 5,
+      circuitBreakerResetTime: retryConfig.circuitBreakerResetTime || 60000,
+    });
+
+    // State persistence for resumable sessions
+    const persistenceConfig = this.config.get('persistence') || {};
+    this.statePersistence = new StatePersistence({
+      workingDirectory: options.workingDirectory || process.cwd(),
+      persistenceDir: persistenceConfig.dir || '.claude-runner',
+      autoSaveInterval: persistenceConfig.autoSaveInterval || 30000,
+      maxCheckpoints: persistenceConfig.maxCheckpoints || 10,
+      cacheMaxSize: persistenceConfig.cacheMaxSize || 100,
+      cacheTTL: persistenceConfig.cacheTTL || 3600000,
+    });
+    this.enablePersistence = options.enablePersistence !== false;
+    this.resumeSessionId = options.resumeSessionId || null;
+
+    // Adaptive execution optimizer
+    this.adaptiveOptimizer = new AdaptiveOptimizer();
+    this.currentExecutionProfile = null;
 
     // Execution state
     this.iterationCount = 0;
@@ -59,6 +106,11 @@ export class AutonomousRunnerCLI {
 
     // Abort tracking
     this.abortReason = null;
+
+    // Adaptive delay tracking
+    this.lastIterationSuccess = true;
+    this.consecutiveSuccesses = 0;
+    this.consecutiveErrors = 0;
 
     // Wire up client events
     this.client.on('stdout', (chunk) => {
@@ -133,23 +185,29 @@ Begin immediately.`;
       initialContext = '',
     } = options;
 
+    // Get model configuration
+    const modelConfig = this.config.get('models') || {};
+    const retryConfig = this.config.get('retry') || {};
+
     // Initialize components
     this.goalTracker = new GoalTracker(primaryGoal, subGoals);
 
-    // Create separate client for supervisor to avoid session ID conflicts
-    this.supervisorClient = new ClaudeCodeClient({
+    // Use specialized supervisor client (fast, read-only, no persistence)
+    this.supervisorClient = ClaudeCodeClient.createSupervisorClient({
       cwd: workingDirectory,
-      skipPermissions: true,
       verbose: false,
+      model: modelConfig.supervisor || 'sonnet',
+      fallbackModel: modelConfig.supervisorFallback || 'haiku',
     });
     this.supervisor = new Supervisor(this.supervisorClient, this.goalTracker, this.config);
 
-    // Create separate client for planner
-    this.plannerClient = new ClaudeCodeClient({
+    // Use specialized planner client (powerful, with persistence)
+    this.plannerClient = ClaudeCodeClient.createPlannerClient({
       cwd: workingDirectory,
-      skipPermissions: true,
       verbose: false,
-      model: 'opus', // Use Opus for planning
+      model: modelConfig.planner || 'opus',
+      fallbackModel: modelConfig.plannerFallback || 'sonnet',
+      maxRetries: retryConfig.maxRetries || 3,
     });
     this.planner = new Planner(this.plannerClient);
 
@@ -233,11 +291,50 @@ Begin immediately.`;
       .pop();
 
     // Supervisor checks the last response
+    // Skip supervision if configured and step is simple, or use cached result
     if (lastResponse) {
-      supervisionResult = await this.supervisor.check(
+      const currentStep = this.planner?.getCurrentStep();
+      const supervisionConfig = this.config.get('supervisor') || {};
+
+      // Try to use cached assessment for similar responses
+      const cachedAssessment = this.contextManager.getCachedAssessment(
         lastResponse.content,
-        this.recentActions
+        this.primaryGoal,
+        this.supervisor.consecutiveIssues
       );
+
+      if (cachedAssessment && !cachedAssessment.needsIntervention) {
+        // Use cached assessment for speed
+        supervisionResult = {
+          assessment: cachedAssessment,
+          needsIntervention: false,
+          prompt: null,
+          consecutiveIssues: this.supervisor.consecutiveIssues,
+          escalated: false,
+          cached: true,
+        };
+        this.metrics.recordSupervision(supervisionResult, 0);
+      } else {
+        // Full supervision check
+        const supervisionStart = Date.now();
+        supervisionResult = await this.supervisor.check(
+          lastResponse.content,
+          this.recentActions,
+          { currentStep, complexity: currentStep?.complexity }
+        );
+        const supervisionDuration = Date.now() - supervisionStart;
+        this.metrics.recordSupervision(supervisionResult, supervisionDuration);
+
+        // Cache the result if it was a CONTINUE action
+        if (supervisionResult.assessment?.action === 'CONTINUE') {
+          this.contextManager.cacheAssessment(
+            lastResponse.content,
+            this.primaryGoal,
+            this.supervisor.consecutiveIssues,
+            supervisionResult.assessment
+          );
+        }
+      }
 
       this.onSupervision({
         iteration: this.iterationCount,
@@ -340,6 +437,21 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
     this.iterationCount++;
 
     const response = result.response || '';
+
+    // Check for duplicate/looping responses
+    const isDuplicate = this.contextManager.isDuplicateResponse(response);
+    if (isDuplicate) {
+      this.onProgress({
+        type: 'duplicate_response_detected',
+        iteration: this.iterationCount,
+        message: 'Worker may be stuck in a loop',
+      });
+      // Force supervisor to escalate on next check
+      this.supervisor.consecutiveIssues = Math.max(
+        this.supervisor.consecutiveIssues,
+        this.config.get('escalationThresholds')?.warn || 2
+      );
+    }
 
     // Extract and store recent actions
     const newActions = this.extractActions(response);
@@ -490,71 +602,248 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
     this.isRunning = true;
     this.shouldStop = false;
     this.phaseManager.start();
+    this.metrics.startSession();
+
+    // Initialize state persistence
+    let resumedSession = null;
+    if (this.enablePersistence) {
+      await this.statePersistence.initialize();
+
+      // Check for resumable session or start new one
+      if (this.resumeSessionId) {
+        resumedSession = await this.statePersistence.startSession(this.primaryGoal, {
+          resumeSessionId: this.resumeSessionId,
+        });
+      } else {
+        // Check if there's an existing session for this goal
+        const existingSession = await this.statePersistence.getResumableSession(this.primaryGoal);
+        if (existingSession) {
+          this.onProgress({
+            type: 'resumable_session_found',
+            session: existingSession,
+          });
+          resumedSession = await this.statePersistence.startSession(this.primaryGoal, {
+            resumeSessionId: existingSession.id,
+          });
+        } else {
+          await this.statePersistence.startSession(this.primaryGoal);
+        }
+      }
+    }
 
     this.onProgress({
       type: 'started',
       time: this.phaseManager.getTimeStatus(),
+      resumed: !!resumedSession,
+      sessionId: this.statePersistence.currentSession?.id,
     });
 
     try {
-      // Create execution plan first
-      this.onProgress({ type: 'planning', message: 'Creating execution plan...' });
+      // Check if we're resuming with an existing plan
+      if (resumedSession?.plan) {
+        this.onProgress({ type: 'resuming', message: 'Resuming from saved session...' });
+        this.planner.restorePlan(resumedSession.plan, resumedSession.currentStep);
+        this.planCreated = true;
 
-      const plan = await this.planner.createPlan(
-        this.primaryGoal,
-        this.initialContext,
-        this.workingDirectory
-      );
-      this.planCreated = true;
-
-      this.onProgress({
-        type: 'plan_created',
-        plan: plan,
-        summary: this.planner.getSummary(),
-      });
-
-      // Review plan before execution
-      this.onProgress({ type: 'plan_review_started', plan });
-      const planReview = await this.supervisor.reviewPlan(plan, this.primaryGoal);
-
-      this.onProgress({
-        type: 'plan_review_complete',
-        review: planReview,
-      });
-
-      if (!planReview.approved) {
-        // Plan has issues - warn but continue (don't block execution)
         this.onProgress({
-          type: 'plan_review_warning',
-          issues: planReview.issues,
-          missingSteps: planReview.missingSteps,
-          suggestions: planReview.suggestions,
+          type: 'plan_restored',
+          plan: resumedSession.plan,
+          currentStep: resumedSession.currentStep,
+          completedSteps: resumedSession.completedSteps,
         });
+      } else {
+        // Create execution plan first
+        this.onProgress({ type: 'planning', message: 'Creating execution plan...' });
+
+        const planStart = Date.now();
+        const plan = await this.planner.createPlan(
+          this.primaryGoal,
+          this.initialContext,
+          this.workingDirectory
+        );
+        this.planCreated = true;
+        this.metrics.recordPlanningTime(Date.now() - planStart, plan.totalSteps);
+
+        // Save plan to persistence
+        if (this.enablePersistence) {
+          await this.statePersistence.setPlan(plan);
+          await this.statePersistence.createCheckpoint('plan_created');
+        }
+
+        // Enable parallel execution if configured
+        const parallelConfig = this.config.get('parallelExecution') || {};
+        if (parallelConfig.enabled !== false) {
+          this.planner.enableParallelMode();
+        }
+
+        this.onProgress({
+          type: 'plan_created',
+          plan: plan,
+          summary: this.planner.getSummary(),
+          executionStats: this.planner.getExecutionStats(),
+        });
+
+        // Review plan before execution
+        this.onProgress({ type: 'plan_review_started', plan });
+        const planReview = await this.supervisor.reviewPlan(plan, this.primaryGoal);
+
+        this.onProgress({
+          type: 'plan_review_complete',
+          review: planReview,
+        });
+
+        if (!planReview.approved) {
+          // Plan has issues - warn but continue (don't block execution)
+          this.onProgress({
+            type: 'plan_review_warning',
+            issues: planReview.issues,
+            missingSteps: planReview.missingSteps,
+            suggestions: planReview.suggestions,
+          });
+        }
       }
+
+      // Create adaptive execution profile based on goal
+      this.currentExecutionProfile = this.adaptiveOptimizer.createExecutionProfile(
+        this.primaryGoal,
+        { complexity: this.planner.plan?.complexity || 'medium' }
+      );
+
+      this.onProgress({
+        type: 'execution_profile_created',
+        profile: this.currentExecutionProfile,
+      });
 
       while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete()) {
         let iterationResult;
         let retries = 0;
         const maxRetries = this.config.get('maxRetries');
 
-        // Run iteration with retry logic
-        while (retries < maxRetries) {
-          try {
-            iterationResult = await this.runIteration();
-            break;
-          } catch (error) {
-            retries++;
-            this.onError({
-              type: 'iteration_error',
-              error: error.message,
-              retry: retries,
+        // Check if current step should be decomposed (complex or taking too long)
+        const stepToCheck = this.planner.getCurrentStep();
+        if (stepToCheck && !stepToCheck.isSubtask && !stepToCheck.decomposedInto) {
+          const stepElapsed = stepToCheck.startTime ? Date.now() - stepToCheck.startTime : 0;
+          if (this.planner.shouldDecomposeStep(stepToCheck, stepElapsed)) {
+            this.onProgress({
+              type: 'step_decomposing',
+              step: stepToCheck,
+              reason: stepToCheck.complexity === 'complex' ? 'complex_step' : 'long_running',
             });
 
-            if (retries >= maxRetries) {
-              throw error;
-            }
+            const decomposition = await this.planner.decomposeComplexStep(
+              stepToCheck,
+              this.workingDirectory
+            );
 
-            await this.sleep(this.config.get('retryDelay'));
+            if (decomposition && this.planner.injectSubtasks(decomposition)) {
+              this.onProgress({
+                type: 'step_decomposed',
+                parentStep: stepToCheck,
+                subtasks: decomposition.subtasks,
+                parallelSafe: decomposition.parallelSafe,
+              });
+            }
+          }
+        }
+
+        // Start iteration tracking
+        this.metrics.startIteration();
+
+        // Run iteration with smart error recovery
+        const currentStep = this.planner.getCurrentStep();
+        const operationId = `iteration_${this.iterationCount}_step_${currentStep?.number || 0}`;
+
+        try {
+          iterationResult = await this.errorRecovery.executeWithRetry(
+            () => this.runIteration(),
+            {
+              operationId,
+              maxRetries,
+              onError: ({ error, errorEntry, recovery }) => {
+                this.metrics.recordError('iteration_error', recovery.shouldRetry);
+                this.onError({
+                  type: 'iteration_error',
+                  error: error.message,
+                  category: recovery.category,
+                  strategy: recovery.strategy,
+                  retryCount: recovery.retryCount,
+                  delay: recovery.delay,
+                  willRetry: recovery.shouldRetry,
+                });
+              },
+              onContextAction: async (action) => {
+                // Handle context-related recovery actions
+                if (action.action === 'reset') {
+                  this.contextManager.reset();
+                  this.onProgress({
+                    type: 'context_reset',
+                    reason: 'error_recovery',
+                  });
+                } else if (action.action === 'trim') {
+                  this.contextManager.trimToRecent(action.keepRecent || 5);
+                  this.onProgress({
+                    type: 'context_trimmed',
+                    reason: 'error_recovery',
+                    keepRecent: action.keepRecent,
+                  });
+                }
+              },
+            }
+          );
+        } catch (recoveryError) {
+          // Check if this is a recovery error with special handling
+          if (recoveryError.strategy === RecoveryStrategy.SKIP_STEP && currentStep) {
+            // Skip this step and continue
+            this.onProgress({
+              type: 'step_skipped',
+              step: currentStep,
+              reason: 'error_recovery',
+              error: recoveryError.originalError?.message || recoveryError.message,
+            });
+            this.planner.skipStep(currentStep.number);
+            this.metrics.recordStepExecution(currentStep.number, 'skipped', 0, {
+              reason: 'error_recovery',
+            });
+            continue; // Skip to next iteration
+          } else if (recoveryError.strategy === RecoveryStrategy.ESCALATE) {
+            // Escalate to user
+            this.onEscalation({
+              type: 'error_escalation',
+              error: recoveryError.originalError?.message || recoveryError.message,
+              category: recoveryError.category,
+              recovery: recoveryError.recovery,
+              errorTrends: this.errorRecovery.getErrorTrends(),
+            });
+            // Allow continuation but log the issue
+            iterationResult = {
+              response: `Error escalated: ${recoveryError.message}`,
+              escalated: true,
+            };
+          } else {
+            // Re-throw for other strategies (ABORT, etc.)
+            throw recoveryError.originalError || recoveryError;
+          }
+        }
+
+        // End iteration tracking
+        this.metrics.endIteration();
+
+        // Check for adaptive strategy adjustments every 5 iterations
+        if (this.iterationCount % 5 === 0 && this.currentExecutionProfile) {
+          const currentMetrics = {
+            recentErrorRate: this.errorRecovery.getErrorTrends().lastMinute / Math.max(1, 5),
+            avgIterationTime: this.metrics.efficiency.avgStepTime,
+            stuckIterations: this.getStuckIterationCount(),
+            supervisionScore: this.getAverageSupervisionScore(),
+          };
+
+          const adjustments = this.adaptiveOptimizer.adjustStrategy(currentMetrics);
+          if (adjustments && adjustments.length > 0) {
+            this.onProgress({
+              type: 'strategy_adjusted',
+              adjustments,
+              newProfile: this.currentExecutionProfile,
+            });
           }
         }
 
@@ -580,16 +869,59 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
           if (stepVerification.verified) {
             // Step verified - advance
             const completedStep = this.pendingStepCompletion.step;
+            const stepDuration = completedStep.startTime
+              ? Date.now() - completedStep.startTime
+              : 0;
+
             this.planner.advanceStep();
             this.pendingStepCompletion = null;
             this.stepVerificationFailures = 0;
+
+            // Record step metrics
+            this.metrics.recordStepExecution(
+              completedStep.number,
+              'completed',
+              stepDuration,
+              { complexity: completedStep.complexity }
+            );
 
             this.onProgress({
               type: 'step_complete',
               step: completedStep,
               progress: this.planner.getProgress(),
               verification: stepVerification,
+              duration: stepDuration,
             });
+
+            // Persist step completion
+            if (this.enablePersistence) {
+              await this.statePersistence.updateStepProgress(
+                completedStep.number,
+                'completed',
+                { duration: stepDuration }
+              );
+              // Create checkpoint every 3 completed steps
+              if (this.planner.getProgress().completed % 3 === 0) {
+                await this.statePersistence.createCheckpoint(`step_${completedStep.number}_complete`);
+              }
+            }
+
+            // Record task performance for adaptive learning
+            const taskType = this.adaptiveOptimizer.classifyTask(completedStep.description);
+            this.adaptiveOptimizer.recordTaskPerformance(taskType, {
+              duration: stepDuration,
+              success: true,
+              iterations: 1, // TODO: track actual iterations per step
+            });
+
+            // Record strategy effectiveness
+            if (this.currentExecutionProfile) {
+              this.adaptiveOptimizer.recordStrategyEffectiveness(
+                this.currentExecutionProfile.primaryStrategy,
+                true,
+                { duration: stepDuration }
+              );
+            }
           } else {
             // Step not verified - reject claim
             this.stepVerificationFailures++;
@@ -723,8 +1055,12 @@ Begin working on this sub-step now.`;
           this.shouldStop = true;
         }
 
-        // Brief pause between iterations
-        await this.sleep(2000);
+        // Adaptive delay between iterations
+        // Success = no intervention needed (use supervision from iteration result)
+        const iterationSuccess = !iterationResult?.supervision ||
+          iterationResult.supervision.action === 'CONTINUE';
+        const delay = this.getAdaptiveDelay(iterationSuccess);
+        await this.sleep(delay);
       }
 
       // Handle time expiration
@@ -798,12 +1134,33 @@ Begin working on this sub-step now.`;
         }
       }
 
+      // End metrics session
+      this.metrics.endSession();
+
       // Generate final report
       const finalReport = this.generateFinalReport(finalVerification);
+
+      // Complete session persistence
+      if (this.enablePersistence) {
+        await this.statePersistence.completeSession({
+          verified: finalVerification?.overallPassed,
+          completedSteps: this.planner.getProgress().completed,
+          totalSteps: this.planner.getProgress().total,
+        });
+      }
+
       this.onComplete(finalReport);
       return finalReport;
 
     } catch (error) {
+      this.metrics.recordError('fatal_error', false);
+      this.metrics.endSession();
+
+      // Mark session as failed
+      if (this.enablePersistence) {
+        await this.statePersistence.failSession(error);
+      }
+
       this.onError({
         type: 'fatal_error',
         error: error.message,
@@ -814,6 +1171,29 @@ Begin working on this sub-step now.`;
       this.isRunning = false;
       this.phaseManager.stop();
     }
+  }
+
+  /**
+   * Get count of iterations stuck on the same step
+   */
+  getStuckIterationCount() {
+    const currentStep = this.planner?.getCurrentStep();
+    if (!currentStep) return 0;
+
+    // Count recent iterations on this step
+    const recentIterations = this.metrics.timings.iterations.slice(-10);
+    return recentIterations.length;
+  }
+
+  /**
+   * Get average supervision score from recent checks
+   */
+  getAverageSupervisionScore() {
+    const scores = this.metrics.supervision.scoreHistory;
+    if (scores.length === 0) return 75; // Default
+
+    const recentScores = scores.slice(-5);
+    return recentScores.reduce((a, b) => a + b, 0) / recentScores.length;
   }
 
   /**
@@ -892,6 +1272,11 @@ Begin working on this sub-step now.`;
       } : null,
       phases: phaseReport.phases,
       checkpoints: phaseReport.checkpoints,
+      cacheStats: this.contextManager.getCacheStats(),
+      tokenStats: this.contextManager.getTokenStats(),
+      clientMetrics: this.getClientMetrics(),
+      performanceMetrics: this.metrics.getSummary(),
+      performanceTrends: this.metrics.getTrends(),
     };
   }
 
@@ -907,6 +1292,52 @@ Begin working on this sub-step now.`;
    */
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Calculate adaptive delay based on recent iteration outcomes
+   * Speeds up when things are going well, slows down on errors
+   */
+  getAdaptiveDelay(success = true) {
+    const delayConfig = this.config.get('iterationDelay') || {};
+
+    // If adaptive delays disabled, use default
+    if (delayConfig.adaptive === false) {
+      return delayConfig.default || 2000;
+    }
+
+    const minimum = delayConfig.minimum || 500;
+    const afterSuccess = delayConfig.afterSuccess || 1000;
+    const afterError = delayConfig.afterError || 3000;
+
+    if (success) {
+      this.consecutiveSuccesses++;
+      this.consecutiveErrors = 0;
+
+      // Speed up after consecutive successes (down to minimum)
+      // Each success reduces delay by 100ms, down to minimum
+      const reduction = Math.min(this.consecutiveSuccesses - 1, 5) * 100;
+      return Math.max(minimum, afterSuccess - reduction);
+    } else {
+      this.consecutiveErrors++;
+      this.consecutiveSuccesses = 0;
+
+      // Slow down after errors (exponential backoff)
+      // Each error increases delay by 500ms
+      const increase = Math.min(this.consecutiveErrors - 1, 5) * 500;
+      return afterError + increase;
+    }
+  }
+
+  /**
+   * Get client metrics for monitoring
+   */
+  getClientMetrics() {
+    return {
+      worker: this.client.getMetrics(),
+      supervisor: this.supervisorClient?.getMetrics() || null,
+      planner: this.plannerClient?.getMetrics() || null,
+    };
   }
 }
 
