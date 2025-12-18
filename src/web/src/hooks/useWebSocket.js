@@ -262,10 +262,10 @@ export function useWebSocket() {
           supervision: message.data,
           metrics: {
             ...prev.metrics,
-            supervisionChecks: prev.metrics.supervisionChecks + 1,
+            supervisionChecks: (prev.metrics?.supervisionChecks ?? 0) + 1,
             interventions: message.data?.needsIntervention
-              ? prev.metrics.interventions + 1
-              : prev.metrics.interventions,
+              ? (prev.metrics?.interventions ?? 0) + 1
+              : (prev.metrics?.interventions ?? 0),
           },
         }));
         break;

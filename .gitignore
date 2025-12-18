@@ -28,7 +28,6 @@ Thumbs.db
 *~
 
 # Build output
-dist/
 build/
 
 # Coverage and testing
