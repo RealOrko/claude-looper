@@ -1,6 +1,6 @@
 # 🤖 Claude Autonomous Runner
 
-Run Claude in continuous autonomous mode with intelligent planning, LLM-based supervision, and multi-layer verification.
+🚀 Run Claude in continuous autonomous mode with intelligent planning, LLM-based supervision, and multi-layer verification. 🎯
 
 ## ✨ Features
 
@@ -14,7 +14,7 @@ Run Claude in continuous autonomous mode with intelligent planning, LLM-based su
 
 ## 📦 Installation
 
-Requires [Claude Code CLI](https://github.com/anthropics/claude-code) and an active Claude Max subscription.
+⚡ Requires [Claude Code CLI](https://github.com/anthropics/claude-code) and an active Claude Max subscription.
 
 ```bash
 # Clone the repository
@@ -154,7 +154,7 @@ When a step is blocked, the planner creates an alternative approach:
   → 3️⃣ Sub-step 3: Use Docker container
 ```
 
-If the sub-plan also fails, the step is marked failed and execution continues.
+If the sub-plan also fails, the step is marked failed and execution continues. 💪
 
 ## 🏗️ Architecture
 
@@ -245,4 +245,4 @@ claude
 
 ## 📄 License
 
-MIT
+MIT ⚖️
