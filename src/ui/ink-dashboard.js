@@ -534,6 +534,9 @@ export class InkDashboard {
         const color = step.status === 'completed' ? '\x1b[32m' :
                       step.status === 'failed' ? '\x1b[31m' : '\x1b[90m';
         console.log(`    ${color}${icon} ${step.number}. ${step.description}\x1b[0m`);
+        if (step.status === 'failed' && step.failReason) {
+          console.log(`       \x1b[31m└─ ${step.failReason}\x1b[0m`);
+        }
       }
     }
 

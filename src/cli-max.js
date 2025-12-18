@@ -274,6 +274,12 @@ function verboseComplete(report) {
     console.log(`  Plan: ${report.plan.completed}/${report.plan.totalSteps} steps completed`);
     if (report.plan.failed > 0) {
       console.log(`  Failed Steps: ${report.plan.failed}`);
+      // Show failed step details
+      for (const step of report.plan.steps || []) {
+        if (step.status === 'failed' && step.failReason) {
+          console.log(`    ✗ Step ${step.number}: ${step.failReason}`);
+        }
+      }
     }
   }
 
