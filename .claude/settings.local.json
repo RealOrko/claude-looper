@@ -17,7 +17,8 @@
       "Bash(npm run docker:build:*)",
       "Bash(docker run:*)",
       "Bash(ls:*)",
-      "Bash(npm test:*)"
+      "Bash(npm test:*)",
+      "Bash(rm:*)"
     ]
   }
 }

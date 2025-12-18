@@ -12,6 +12,7 @@ import { RetryableAutonomousRunner } from './retryable-runner.js';
 import { parseArgs } from 'util';
 import { InkDashboard } from './ui/ink-dashboard.js';
 import { colors, style, icons } from './ui/terminal.js';
+import { AgentWebSocketServer } from './ui/websocket-server.js';
 
 const VERSION = '1.0.0';
 
@@ -34,6 +35,8 @@ ${colors.white}${style.bold}OPTIONS:${style.reset}
   ${colors.green}-j, --json${style.reset}               Output progress as JSON
   ${colors.green}-r, --retry${style.reset}              Enable retry loop (continues until HIGH confidence)
   ${colors.green}--max-retries${style.reset} <n>        Maximum retry attempts [default: 100]
+  ${colors.green}--ui${style.reset}                     Enable web UI for visualization (default port: 3000)
+  ${colors.green}--ui-port${style.reset} <port>         Port for web UI [default: 3000]
   ${colors.green}-h, --help${style.reset}               Show this help message
   ${colors.green}--version${style.reset}                Show version number
   ${colors.green}--docker${style.reset}                 Run inside the claude docker container
@@ -57,6 +60,12 @@ ${colors.white}${style.bold}EXAMPLES:${style.reset}
 
   ${colors.gray}# Retry until HIGH confidence achieved (up to 5 attempts)${style.reset}
   ${colors.cyan}claude-auto${style.reset} -r --max-retries 5 -t 4h "Build and test a REST API"
+
+  ${colors.gray}# Enable web UI for visualization${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --ui "Build a REST API"
+
+  ${colors.gray}# Web UI on custom port${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --ui --ui-port 8080 "Build a REST API"
 
 ${colors.white}${style.bold}REQUIREMENTS:${style.reset}
   ${icons.arrow} Claude Code CLI must be installed and authenticated
@@ -390,6 +399,8 @@ async function main() {
       json: { type: 'boolean', short: 'j', default: false },
       retry: { type: 'boolean', short: 'r', default: false },
       'max-retries': { type: 'string', default: '100' },
+      ui: { type: 'boolean', default: false },
+      'ui-port': { type: 'string', default: '3000' },
       help: { type: 'boolean', short: 'h', default: false },
       version: { type: 'boolean', default: false },
       docker: { type: 'boolean', default: false },
@@ -443,6 +454,16 @@ async function main() {
   // Create dashboard or use simple handlers based on mode
   let dashboard = null;
   let handlers = {};
+  let wsServer = null;
+
+  // Initialize WebSocket server if --ui flag is set
+  if (values.ui) {
+    wsServer = new AgentWebSocketServer({
+      port: parseInt(values['ui-port'], 10) || 3000,
+    });
+    await wsServer.start();
+    wsServer.startHeartbeat();
+  }
 
   if (values.json) {
     // JSON mode - structured output
@@ -499,6 +520,11 @@ async function main() {
     };
   }
 
+  // Wrap handlers with WebSocket broadcasting if UI is enabled
+  if (wsServer) {
+    handlers = wsServer.createHandlers(handlers);
+  }
+
   // Create runner (use RetryableAutonomousRunner if --retry flag is set)
   const runner = values.retry
     ? new RetryableAutonomousRunner({
@@ -522,7 +548,7 @@ async function main() {
 
   // Handle graceful shutdown
   let shuttingDown = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
 
@@ -534,6 +560,11 @@ async function main() {
     }
 
     runner.stop();
+
+    if (wsServer) {
+      wsServer.stopHeartbeat();
+      await wsServer.stop();
+    }
   };
 
   process.on('SIGINT', shutdown);
@@ -554,11 +585,21 @@ async function main() {
       dashboard.cleanup();
     }
 
+    if (wsServer) {
+      wsServer.stopHeartbeat();
+      await wsServer.stop();
+    }
+
     process.exit(report.status === 'completed' ? 0 : 1);
 
   } catch (error) {
     if (dashboard) {
       dashboard.cleanup();
+    }
+
+    if (wsServer) {
+      wsServer.stopHeartbeat();
+      await wsServer.stop();
     }
 
     if (values.json) {
