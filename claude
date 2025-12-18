@@ -23,4 +23,5 @@ docker run $TTY_FLAGS --rm \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd):/home/claude/workspace" \
     -v "$HOME/.ssh:/home/claude/.ssh:ro" \
+    -v "/tmp:/tmp" \
     claude-code claude "--dangerously-skip-permissions"

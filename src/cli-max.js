@@ -360,6 +360,8 @@ async function runInDocker(args) {
     '-v', `${claudeConfigDir}:/home/claude/.claude`,
     // Mount ~/.ssh for git SSH authentication (read-only)
     '-v', `${sshDir}:/home/claude/.ssh:ro`,
+    // Mount /tmp for temporary files (read-write)
+    '-v', '/tmp:/tmp',
     // Set working directory
     '-w', '/home/claude/workspace',
     // Use the claude image
@@ -373,6 +375,7 @@ async function runInDocker(args) {
   log(`${colors.gray}  Mounting: ${cwd} -> /home/claude/workspace${style.reset}`);
   log(`${colors.gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${style.reset}`);
   log(`${colors.gray}  Mounting: ${sshDir} -> /home/claude/.ssh (read-only)${style.reset}`);
+  log(`${colors.gray}  Mounting: /tmp -> /tmp${style.reset}`);
   log('');
 
   const proc = spawn('docker', dockerArgs, {
