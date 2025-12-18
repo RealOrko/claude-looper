@@ -144,10 +144,16 @@ const PlanStep = ({ step, isCurrent }) => {
                       step.status === 'failed' ? 'red' :
                       isCurrent ? 'cyan' : 'gray';
 
-  return e(Text, null,
-    e(Text, { color: statusColor }, `${statusIcon} ${step.number}. `),
-    e(Text, { color: isCurrent ? 'white' : 'gray' }, step.description),
-    e(Text, { color: 'gray', dimColor: true }, ` [${step.complexity}]`)
+  return e(Box, { flexDirection: 'column' },
+    e(Text, null,
+      e(Text, { color: statusColor }, `${statusIcon} ${step.number}. `),
+      e(Text, { color: isCurrent ? 'white' : 'gray' }, step.description),
+      e(Text, { color: 'gray', dimColor: true }, ` [${step.complexity}]`)
+    ),
+    step.status === 'failed' && step.failReason && e(Text, null,
+      e(Text, { color: 'gray' }, '   └─ '),
+      e(Text, { color: 'red' }, step.failReason)
+    )
   );
 };
 
@@ -400,6 +406,7 @@ export class InkDashboard {
           const stepIndex = this.state.plan.steps.findIndex(s => s.number === data.step.number);
           if (stepIndex >= 0) {
             this.state.plan.steps[stepIndex].status = 'failed';
+            this.state.plan.steps[stepIndex].failReason = data.reason;
           }
         }
       }

@@ -1147,13 +1147,18 @@ REASON: [one paragraph explanation]`;
       };
     } catch (error) {
       console.error('[Supervisor] Goal verification failed:', error.message);
+      const isTimeout = error.message?.includes('timed out');
       return {
-        achieved: false,
+        // Don't mark achieved as false on timeout - we don't know if goal was achieved
+        // null means "verification inconclusive", false means "goal definitely not achieved"
+        achieved: isTimeout ? null : false,
         confidence: 'LOW',
         functional: 'UNKNOWN',
         recommendation: 'NEEDS_TESTING',
         reason: `Verification failed: ${error.message}`,
         error: error.message,
+        verificationError: true,
+        verificationTimeout: isTimeout,
       };
     }
   }

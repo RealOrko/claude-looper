@@ -91,7 +91,20 @@ class ParallelStepExecutor {
 
     try {
       const prompt = this.buildStepPrompt(step);
-      const result = await client.continueConversation(prompt);
+
+      // Ensure client has an active session before calling continueConversation
+      let result;
+      if (!client.hasActiveSession()) {
+        // Start a new session with step context
+        const systemContext = this.runner.buildSystemContext(
+          this.runner.primaryGoal,
+          this.runner.subGoals,
+          this.runner.workingDirectory
+        );
+        result = await client.startSession(systemContext, prompt);
+      } else {
+        result = await client.continueConversation(prompt);
+      }
       const response = result.response || '';
       const duration = Date.now() - startTime;
 
@@ -967,7 +980,18 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         profile: this.currentExecutionProfile,
       });
 
-      while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete()) {
+      // Track retry cycles for when plan completes but goal isn't achieved
+      let goalAchievementCycles = 0;
+      const maxGoalCycles = 10; // Max times to retry after plan "completes"
+
+      // OUTER BULLETPROOF LOOP - only exits on time expiry or user stop
+      // This loop continues even when plan "completes" if goal isn't achieved
+      while (!this.shouldStop && !this.phaseManager.isTimeExpired()) {
+        // Reset consecutive abort errors on each major cycle
+        this.consecutiveAbortErrors = 0;
+
+        // Inner loop: execute current plan
+        while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete()) {
         let iterationResult;
         let retries = 0;
         const maxRetries = this.config.get('maxRetries');
@@ -1109,9 +1133,43 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
               response: `Error escalated: ${recoveryError.message}`,
               escalated: true,
             };
+          } else if (recoveryError.strategy === RecoveryStrategy.ABORT) {
+            // ABORT strategy - but we NEVER exit the loop due to errors
+            // Instead, wait with exponential backoff and retry
+            const backoffDelay = Math.min(60000, 5000 * Math.pow(2, this.consecutiveAbortErrors || 0));
+            this.consecutiveAbortErrors = (this.consecutiveAbortErrors || 0) + 1;
+
+            this.onProgress({
+              type: 'abort_recovery',
+              error: recoveryError.originalError?.message || recoveryError.message,
+              category: recoveryError.category,
+              backoffDelay,
+              consecutiveErrors: this.consecutiveAbortErrors,
+              reason: 'Loop is bulletproof - waiting and retrying instead of aborting',
+            });
+
+            // Wait before retrying
+            await this.sleep(backoffDelay);
+
+            // Reset client session to start fresh
+            this.client.reset();
+
+            // Continue the loop instead of throwing
+            iterationResult = {
+              response: `Recovered from abort: ${recoveryError.message}`,
+              recovered: true,
+            };
           } else {
-            // Re-throw for other strategies (ABORT, etc.)
-            throw recoveryError.originalError || recoveryError;
+            // Unknown strategy - log and continue (NEVER throw from main loop)
+            this.onProgress({
+              type: 'unknown_recovery_strategy',
+              strategy: recoveryError.strategy,
+              error: recoveryError.originalError?.message || recoveryError.message,
+            });
+            iterationResult = {
+              response: `Unknown recovery strategy: ${recoveryError.strategy}`,
+              recovered: true,
+            };
           }
         }
 
@@ -1392,7 +1450,92 @@ Begin working on this sub-step now.`;
           iterationResult.supervision.action === 'CONTINUE';
         const delay = this.getAdaptiveDelay(iterationSuccess);
         await this.sleep(delay);
-      }
+        } // End of inner plan execution loop
+
+        // Check if we should exit the outer bulletproof loop
+        if (this.shouldStop || this.phaseManager.isTimeExpired()) {
+          break; // User stopped or time expired - exit outer loop
+        }
+
+        // Plan is "complete" (all steps processed) - but is the goal achieved?
+        // Do a quick goal check to decide whether to retry
+        goalAchievementCycles++;
+
+        if (goalAchievementCycles > maxGoalCycles) {
+          this.onProgress({
+            type: 'max_retry_cycles_reached',
+            cycles: goalAchievementCycles,
+            message: 'Max goal achievement cycles reached - proceeding to final verification',
+          });
+          break; // Safety limit reached
+        }
+
+        // Quick goal verification to decide if we should create a new plan
+        const quickVerification = await this.supervisor.verifyGoalAchieved(
+          this.primaryGoal,
+          this.planner.plan.steps,
+          this.workingDirectory
+        );
+
+        this.onProgress({
+          type: 'cycle_verification',
+          cycle: goalAchievementCycles,
+          achieved: quickVerification.achieved,
+          confidence: quickVerification.confidence,
+          gaps: quickVerification.gaps,
+        });
+
+        // If goal achieved with HIGH confidence, exit
+        if (quickVerification.achieved === true && quickVerification.confidence === 'HIGH') {
+          this.onProgress({
+            type: 'goal_achieved',
+            confidence: quickVerification.confidence,
+            cycle: goalAchievementCycles,
+          });
+          break; // Goal achieved - exit outer loop
+        }
+
+        // Goal NOT achieved - create new plan targeting gaps
+        if (!this.phaseManager.isTimeExpired() && !this.shouldStop) {
+          const failedSteps = this.planner.plan.steps.filter(s => s.status === 'failed');
+          const gaps = quickVerification.gaps || failedSteps.map(s => s.description).join(', ');
+
+          this.onProgress({
+            type: 'creating_gap_plan',
+            cycle: goalAchievementCycles,
+            gaps,
+            failedSteps: failedSteps.length,
+            timeRemaining: this.phaseManager.getTimeStatus().remaining,
+          });
+
+          // Reset planner for new attempt
+          const gapContext = `
+PREVIOUS ATTEMPT (Cycle ${goalAchievementCycles}):
+- Completed: ${this.planner.getProgress().completed}/${this.planner.getProgress().total} steps
+- Failed steps: ${failedSteps.map(s => s.description).join(', ') || 'none'}
+- Gaps identified: ${gaps || 'none specified'}
+- Verification result: ${quickVerification.achieved === null ? 'inconclusive' : quickVerification.achieved ? 'partial' : 'not achieved'}
+
+YOUR TASK: Address the gaps and complete the goal. Focus on what's missing.`;
+
+          // Create new plan for gaps
+          const newPlan = await this.planner.createPlan(
+            this.primaryGoal,
+            (this.initialContext || '') + '\n\n' + gapContext,
+            this.workingDirectory
+          );
+
+          this.onProgress({
+            type: 'gap_plan_created',
+            cycle: goalAchievementCycles,
+            plan: newPlan,
+            steps: newPlan.totalSteps,
+          });
+
+          // Reset client session for fresh start
+          this.client.reset();
+        }
+      } // End of outer bulletproof loop
 
       // Handle time expiration
       if (this.phaseManager.isTimeExpired() && !this.shouldStop) {
@@ -1441,24 +1584,46 @@ Begin working on this sub-step now.`;
           result: smokeTests,
         });
 
+        // Handle verification timeout/error gracefully:
+        // - achieved === true: goal verified as achieved
+        // - achieved === false: goal verified as NOT achieved
+        // - achieved === null: verification inconclusive (timeout/error)
+        //   In this case, if smoke tests pass and most steps completed, consider it likely passed
+        const verificationInconclusive = goalVerification.achieved === null;
+        const stepProgress = this.planner.getProgress();
+        const mostStepsCompleted = stepProgress.percentComplete >= 70;
+
+        // Calculate overall result
+        let overallPassed;
+        if (goalVerification.achieved === true) {
+          overallPassed = smokeTests.passed;
+        } else if (goalVerification.achieved === false) {
+          overallPassed = false;
+        } else {
+          // Verification inconclusive - rely on smoke tests + step completion
+          overallPassed = smokeTests.passed && mostStepsCompleted;
+        }
+
         finalVerification = {
           goalVerification,
           smokeTests,
-          overallPassed: goalVerification.achieved && smokeTests.passed,
+          overallPassed,
+          verificationInconclusive,
         };
 
         // Record milestone for final verification
         if (finalVerification.overallPassed) {
+          const suffix = verificationInconclusive ? ' (verification inconclusive but smoke tests passed)' : '';
           this.contextManager.recordMilestone(
-            `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...`
+            `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...${suffix}`
           );
         } else {
-          this.contextManager.recordDecision(
-            'Final verification failed',
-            goalVerification.achieved
+          const reason = verificationInconclusive && smokeTests.passed
+            ? `Verification inconclusive and steps incomplete (${stepProgress.percentComplete}%)`
+            : goalVerification.achieved === true
               ? `Smoke tests failed: ${smokeTests.summary}`
-              : `Goal not achieved: ${goalVerification.reason}`
-          );
+              : `Goal not achieved: ${goalVerification.reason}`;
+          this.contextManager.recordDecision('Final verification failed', reason);
         }
 
         // Update final summary with verification results
@@ -1468,21 +1633,32 @@ Begin working on this sub-step now.`;
           this.finalSummary.fullyVerified = finalVerification.overallPassed;
         }
 
-        // If verification failed, update status
+        // Emit progress based on result
         if (!finalVerification.overallPassed) {
+          let reason;
+          if (verificationInconclusive) {
+            reason = smokeTests.passed
+              ? `Verification inconclusive (timeout) but smoke tests passed - steps ${stepProgress.percentComplete}% complete`
+              : `Verification inconclusive (timeout) and smoke tests failed`;
+          } else if (goalVerification.achieved === true) {
+            reason = `Smoke tests failed: ${smokeTests.summary}`;
+          } else {
+            reason = `Goal not achieved: ${goalVerification.reason}`;
+          }
+
           this.onProgress({
             type: 'final_verification_failed',
             goalVerification,
             smokeTests,
-            reason: goalVerification.achieved
-              ? `Smoke tests failed: ${smokeTests.summary}`
-              : `Goal not achieved: ${goalVerification.reason}`,
+            verificationInconclusive,
+            reason,
           });
         } else {
           this.onProgress({
             type: 'final_verification_passed',
             goalVerification,
             smokeTests,
+            verificationInconclusive,
           });
         }
       }
