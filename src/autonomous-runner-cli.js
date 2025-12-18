@@ -95,6 +95,14 @@ class ParallelStepExecutor {
       const response = result.response || '';
       const duration = Date.now() - startTime;
 
+      // Track token usage from parallel execution
+      if (result.tokensIn || result.tokensOut) {
+        this.runner.contextManager.trackTokenUsage(
+          result.tokensIn || 0,
+          result.tokensOut || 0
+        );
+      }
+
       // Check for completion signals
       const completeMatch = response.match(/STEP\s+(?:\d+\s+)?COMPLETE/i);
       const blockedMatch = response.match(/STEP\s+(?:\d+\s+)?BLOCKED[:\s]*(.+?)(?:\n|$)/i);
@@ -123,9 +131,22 @@ class ParallelStepExecutor {
 
   /**
    * Build prompt for step execution
+   * Uses ContextManager's buildOptimizedWorkerContext for token-efficient context
    */
   buildStepPrompt(step) {
-    return `## Execute Step ${step.number}: ${step.description}
+    // Get optimized context from ContextManager for parallel workers
+    const optimizedContext = this.runner.contextManager.buildOptimizedWorkerContext({
+      goal: this.runner.primaryGoal,
+      currentStep: step,
+      recentHistory: this.runner.client.conversationHistory.slice(-10), // Only recent history
+      planner: this.runner.planner,
+      goalTracker: this.runner.goalTracker,
+      maxLength: 3000, // Keep context compact for parallel workers
+    });
+
+    return `${optimizedContext}
+
+## Execute Step ${step.number}: ${step.description}
 Complexity: ${step.complexity}
 
 Focus exclusively on this step. When complete, say "STEP COMPLETE".
@@ -413,6 +434,15 @@ Begin immediately.`;
         : 'Start working on the goal now.';
 
       const result = await this.client.startSession(systemContext, prompt);
+
+      // Track token usage from API response
+      if (result.tokensIn || result.tokensOut) {
+        this.contextManager.trackTokenUsage(
+          result.tokensIn || 0,
+          result.tokensOut || 0
+        );
+      }
+
       return this.processResponse(result, null);
     }
 
@@ -479,6 +509,12 @@ Begin immediately.`;
       const action = supervisionResult.assessment?.action;
 
       if (action === 'CRITICAL') {
+        // Record critical escalation decision
+        this.contextManager.recordDecision(
+          'Critical escalation issued',
+          `Score: ${supervisionResult.assessment.score}, Consecutive issues: ${supervisionResult.consecutiveIssues}`
+        );
+
         this.onEscalation({
           type: 'critical',
           iteration: this.iterationCount,
@@ -490,6 +526,12 @@ Begin immediately.`;
       }
 
       if (action === 'ABORT') {
+        // Record abort decision
+        this.contextManager.recordDecision(
+          'Session aborted due to persistent drift',
+          `Score: ${supervisionResult.assessment.score}, Consecutive issues: ${supervisionResult.consecutiveIssues}`
+        );
+
         this.onEscalation({
           type: 'abort',
           iteration: this.iterationCount,
@@ -507,16 +549,26 @@ Begin immediately.`;
     prompt = await this.buildIterationPrompt(supervisionResult);
 
     const result = await this.client.continueConversation(prompt);
+
+    // Track token usage from API response
+    if (result.tokensIn || result.tokensOut) {
+      this.contextManager.trackTokenUsage(
+        result.tokensIn || 0,
+        result.tokensOut || 0
+      );
+    }
+
     return this.processResponse(result, supervisionResult);
   }
 
   /**
    * Build the prompt for this iteration
+   * Uses ContextManager for intelligent context compression and token optimization
    */
   async buildIterationPrompt(supervisionResult) {
     const prompts = [];
 
-    // Add supervisor correction if needed
+    // Add supervisor correction if needed (high priority - always include)
     if (supervisionResult?.needsIntervention && supervisionResult.prompt) {
       prompts.push(supervisionResult.prompt);
     }
@@ -533,23 +585,31 @@ Begin immediately.`;
       this.lastProgressCheck = Date.now();
     }
 
-    // Goal reminder every 10 iterations
-    if (this.iterationCount % 10 === 0) {
-      prompts.push(this.goalTracker.getGoalContextPrompt());
+    // Use ContextManager's generateSmartContext for intelligent context building
+    // This handles goal reminder, step context, progress, decisions, and history compression
+    const currentStep = this.planner?.getCurrentStep();
+    const smartContext = this.contextManager.generateSmartContext({
+      goal: this.primaryGoal,
+      currentStep: currentStep,
+      history: this.client.conversationHistory,
+      planner: this.planner,
+      goalTracker: this.goalTracker,
+      maxTokens: this.contextManager.options.tokenBudget,
+    });
+
+    // Add the smart context (contains goal, step, progress, decisions, compressed history)
+    if (smartContext) {
+      prompts.push(smartContext);
     }
 
-    // Add planner step context if available
-    if (this.planner) {
-      const currentStep = this.planner.getCurrentStep();
+    // Add specific step prompt if available (for clear completion signals)
+    if (currentStep) {
       const progress = this.planner.getProgress();
-
-      if (currentStep) {
-        const stepPrompt = `## CURRENT STEP (${progress.current}/${progress.total})
+      const stepPrompt = `## CURRENT STEP (${progress.current}/${progress.total})
 **${currentStep.description}**
 
 Focus on completing this step. Say "STEP COMPLETE" when done.`;
-        prompts.push(stepPrompt);
-      }
+      prompts.push(stepPrompt);
     }
 
     // Default continuation prompt
@@ -635,6 +695,13 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         if (this.planner.isInSubPlan()) {
           // Sub-plan step failed - abort the whole sub-plan
           this.planner.abortSubPlan(reason);
+
+          // Record decision to abort sub-plan
+          this.contextManager.recordDecision(
+            `Aborted sub-plan for step ${blockedStep.number}`,
+            reason
+          );
+
           this.onProgress({
             type: 'subplan_failed',
             step: blockedStep,
@@ -645,6 +712,13 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
           // Main step failed after sub-plan attempt
           this.planner.failCurrentStep(reason);
           this.planner.advanceStep();
+
+          // Record decision to skip failed step
+          this.contextManager.recordDecision(
+            `Skipped failed step ${blockedStep.number}`,
+            reason
+          );
+
           this.onProgress({
             type: 'step_failed',
             step: blockedStep,
@@ -714,6 +788,37 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
 
     // Get planner progress if available
     const plannerProgress = this.planner?.getProgress();
+
+    // Compress conversation history if it exceeds the summary threshold
+    // This optimizes token usage for future prompts
+    const historyLength = this.client.conversationHistory.length;
+    const summaryThreshold = this.contextManager.options.summaryThreshold;
+
+    if (historyLength > summaryThreshold) {
+      // Use ContextManager to compress history, replacing old messages with summaries
+      const compressedHistory = this.contextManager.compressHistory(
+        this.client.conversationHistory,
+        Math.min(10, Math.floor(summaryThreshold / 3)) // Preserve recent messages
+      );
+
+      // Replace the client's conversation history with compressed version
+      this.client.conversationHistory = compressedHistory;
+
+      // Track tokens saved from compression
+      const originalTokens = this.contextManager.estimateTokens(
+        this.client.conversationHistory.map(m => m.content).join('')
+      );
+      const compressedTokens = this.contextManager.estimateTokens(
+        compressedHistory.map(m => m.content).join('')
+      );
+
+      this.onProgress({
+        type: 'history_compressed',
+        originalLength: historyLength,
+        compressedLength: compressedHistory.length,
+        tokensSaved: originalTokens - compressedTokens,
+      });
+    }
 
     return {
       iteration: this.iterationCount,
@@ -807,6 +912,11 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
           this.planner.enableParallelMode();
         }
 
+        // Record milestone for plan creation
+        this.contextManager.recordMilestone(
+          `Created execution plan with ${plan.totalSteps} steps`
+        );
+
         this.onProgress({
           type: 'plan_created',
           plan: plan,
@@ -824,6 +934,12 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         });
 
         if (!planReview.approved) {
+          // Record decision about plan issues
+          this.contextManager.recordDecision(
+            'Proceeding with plan despite review warnings',
+            `Issues: ${planReview.issues?.length || 0}, Missing steps: ${planReview.missingSteps?.length || 0}`
+          );
+
           // Plan has issues - warn but continue (don't block execution)
           this.onProgress({
             type: 'plan_review_warning',
@@ -831,6 +947,12 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
             missingSteps: planReview.missingSteps,
             suggestions: planReview.suggestions,
           });
+        } else {
+          // Record decision that plan was approved
+          this.contextManager.recordDecision(
+            'Plan approved by supervisor',
+            `${this.planner.plan.totalSteps} steps ready for execution`
+          );
         }
       }
 
@@ -1074,6 +1196,11 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
               }
             }
 
+            // Record milestone for step completion
+            this.contextManager.recordMilestone(
+              `Completed step ${completedStep.number}: ${completedStep.description}`
+            );
+
             // Record task performance for adaptive learning
             const taskType = this.adaptiveOptimizer.classifyTask(completedStep.description);
             this.adaptiveOptimizer.recordTaskPerformance(taskType, {
@@ -1096,6 +1223,12 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
             const rejectedStep = this.pendingStepCompletion.step;
             this.pendingStepCompletion = null;
 
+            // Record decision to reject step completion claim
+            this.contextManager.recordDecision(
+              `Rejected step ${rejectedStep.number} completion claim`,
+              stepVerification.reason
+            );
+
             this.onProgress({
               type: 'step_rejected',
               step: rejectedStep,
@@ -1104,7 +1237,7 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
             });
 
             // Tell Claude the step wasn't actually complete
-            await this.client.continueConversation(
+            const rejectionResult = await this.client.continueConversation(
               `## Step Not Complete
 
 Your claim that Step ${rejectedStep.number} ("${rejectedStep.description}") is complete was not verified.
@@ -1113,6 +1246,14 @@ Reason: ${stepVerification.reason}
 
 Please continue working on this step and say "STEP COMPLETE" only when it is truly finished.`
             );
+
+            // Track token usage from rejection prompt
+            if (rejectionResult.tokensIn || rejectionResult.tokensOut) {
+              this.contextManager.trackTokenUsage(
+                rejectionResult.tokensIn || 0,
+                rejectionResult.tokensOut || 0
+              );
+            }
           }
         }
 
@@ -1131,6 +1272,12 @@ Please continue working on this step and say "STEP COMPLETE" only when it is tru
           );
 
           if (subPlan) {
+            // Record decision to create sub-plan
+            this.contextManager.recordDecision(
+              `Created sub-plan for step ${this.pendingSubPlan.step.number}`,
+              `Original step blocked: ${this.pendingSubPlan.reason}. Created ${subPlan.totalSteps} sub-steps.`
+            );
+
             this.onProgress({
               type: 'subplan_created',
               parentStep: this.pendingSubPlan.step,
@@ -1149,7 +1296,15 @@ Let's start with sub-step 1: ${subPlan.steps[0]?.description}
 
 Begin working on this sub-step now.`;
 
-            await this.client.continueConversation(subPlanPrompt);
+            const subPlanResult = await this.client.continueConversation(subPlanPrompt);
+
+            // Track token usage from sub-plan prompt
+            if (subPlanResult.tokensIn || subPlanResult.tokensOut) {
+              this.contextManager.trackTokenUsage(
+                subPlanResult.tokensIn || 0,
+                subPlanResult.tokensOut || 0
+              );
+            }
           } else {
             // Sub-plan creation failed - mark step as failed and move on
             this.planner.failCurrentStep(this.pendingSubPlan.reason);
@@ -1214,7 +1369,15 @@ Begin working on this sub-step now.`;
 
             // Inject rejection prompt and continue working
             const rejectionPrompt = this.verifier.generateRejectionPrompt(verification);
-            await this.client.continueConversation(rejectionPrompt);
+            const verificationRejectionResult = await this.client.continueConversation(rejectionPrompt);
+
+            // Track token usage from verification rejection prompt
+            if (verificationRejectionResult.tokensIn || verificationRejectionResult.tokensOut) {
+              this.contextManager.trackTokenUsage(
+                verificationRejectionResult.tokensIn || 0,
+                verificationRejectionResult.tokensOut || 0
+              );
+            }
           }
         }
 
@@ -1234,9 +1397,17 @@ Begin working on this sub-step now.`;
       // Handle time expiration
       if (this.phaseManager.isTimeExpired() && !this.shouldStop) {
         try {
-          await this.client.continueConversation(
+          const timeExpiredResult = await this.client.continueConversation(
             'TIME EXPIRED. Summarize what was accomplished and list incomplete tasks.'
           );
+
+          // Track token usage from time expiration prompt
+          if (timeExpiredResult.tokensIn || timeExpiredResult.tokensOut) {
+            this.contextManager.trackTokenUsage(
+              timeExpiredResult.tokensIn || 0,
+              timeExpiredResult.tokensOut || 0
+            );
+          }
         } catch (e) {
           // Ignore errors on final summary
         }
@@ -1275,6 +1446,20 @@ Begin working on this sub-step now.`;
           smokeTests,
           overallPassed: goalVerification.achieved && smokeTests.passed,
         };
+
+        // Record milestone for final verification
+        if (finalVerification.overallPassed) {
+          this.contextManager.recordMilestone(
+            `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...`
+          );
+        } else {
+          this.contextManager.recordDecision(
+            'Final verification failed',
+            goalVerification.achieved
+              ? `Smoke tests failed: ${smokeTests.summary}`
+              : `Goal not achieved: ${goalVerification.reason}`
+          );
+        }
 
         // Update final summary with verification results
         if (this.finalSummary) {
