@@ -26,6 +26,163 @@ const MAX_PLAN_STEPS = 15;
 const MIN_PLAN_STEPS = 2;
 const MAX_SUBPLAN_STEPS = 5;
 
+// Quality thresholds
+const PLAN_QUALITY_THRESHOLD = 70;  // Minimum score for plan approval
+
+/**
+ * Plan quality assessment result
+ */
+export class PlanQualityAssessment {
+  constructor(plan) {
+    this.planId = plan.id;
+    this.score = 0;
+    this.issues = [];
+    this.strengths = [];
+    this.approved = false;
+    this.suggestions = [];
+    this.timestamp = Date.now();
+  }
+
+  addIssue(severity, description) {
+    this.issues.push({ severity, description });
+  }
+
+  addStrength(description) {
+    this.strengths.push(description);
+  }
+
+  addSuggestion(description) {
+    this.suggestions.push(description);
+  }
+
+  calculateScore() {
+    // Base score
+    let score = 100;
+
+    // Deduct for issues
+    for (const issue of this.issues) {
+      if (issue.severity === 'critical') score -= 30;
+      else if (issue.severity === 'major') score -= 15;
+      else if (issue.severity === 'minor') score -= 5;
+    }
+
+    // Ensure score is in valid range
+    this.score = Math.max(0, Math.min(100, score));
+    this.approved = this.score >= PLAN_QUALITY_THRESHOLD;
+
+    return this.score;
+  }
+}
+
+/**
+ * Step dependency tracker
+ */
+export class DependencyTracker {
+  constructor() {
+    this.dependencies = new Map(); // stepId -> Set of dependent stepIds
+    this.reverseDeps = new Map();  // stepId -> Set of steps it depends on
+  }
+
+  /**
+   * Add a dependency: stepId depends on dependsOnId
+   */
+  addDependency(stepId, dependsOnId) {
+    if (!this.dependencies.has(dependsOnId)) {
+      this.dependencies.set(dependsOnId, new Set());
+    }
+    this.dependencies.get(dependsOnId).add(stepId);
+
+    if (!this.reverseDeps.has(stepId)) {
+      this.reverseDeps.set(stepId, new Set());
+    }
+    this.reverseDeps.get(stepId).add(dependsOnId);
+  }
+
+  /**
+   * Get steps that depend on the given step
+   */
+  getDependents(stepId) {
+    return Array.from(this.dependencies.get(stepId) || []);
+  }
+
+  /**
+   * Get steps that the given step depends on
+   */
+  getDependencies(stepId) {
+    return Array.from(this.reverseDeps.get(stepId) || []);
+  }
+
+  /**
+   * Check if a step can be executed (all dependencies satisfied)
+   */
+  canExecute(stepId, completedSteps) {
+    const deps = this.reverseDeps.get(stepId);
+    if (!deps || deps.size === 0) return true;
+
+    for (const depId of deps) {
+      if (!completedSteps.has(depId)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  /**
+   * Get execution order respecting dependencies
+   */
+  getExecutionOrder(steps) {
+    const order = [];
+    const completed = new Set();
+    const remaining = new Set(steps.map(s => s.id));
+
+    while (remaining.size > 0) {
+      let added = false;
+      for (const stepId of remaining) {
+        if (this.canExecute(stepId, completed)) {
+          order.push(stepId);
+          completed.add(stepId);
+          remaining.delete(stepId);
+          added = true;
+        }
+      }
+      // Prevent infinite loop if circular dependency
+      if (!added) {
+        // Add remaining in original order
+        for (const stepId of remaining) {
+          order.push(stepId);
+        }
+        break;
+      }
+    }
+
+    return order;
+  }
+
+  /**
+   * Serialize dependencies for storage
+   */
+  toJSON() {
+    const deps = {};
+    for (const [key, value] of this.dependencies) {
+      deps[key] = Array.from(value);
+    }
+    return deps;
+  }
+
+  /**
+   * Load dependencies from serialized form
+   */
+  static fromJSON(json) {
+    const tracker = new DependencyTracker();
+    for (const [dependsOn, dependents] of Object.entries(json)) {
+      for (const dependent of dependents) {
+        tracker.addDependency(dependent, dependsOn);
+      }
+    }
+    return tracker;
+  }
+}
+
 /**
  * Planner Agent
  */
@@ -36,6 +193,21 @@ export class PlannerAgent extends BaseAgent {
     this.model = config.model || 'opus';
     this.planHistory = [];
     this.maxPlanHistory = 20;
+
+    // Track dependencies across plans
+    this.dependencyTracker = new DependencyTracker();
+
+    // Track sub-plan attempts per step
+    this.subPlanAttempts = new Map();
+    this.maxSubPlanAttempts = 3;
+
+    // Store context for adaptive replanning
+    this.executionContext = {
+      completedSteps: [],
+      failedSteps: [],
+      blockedReasons: [],
+      successfulApproaches: [],
+    };
 
     // Register message handlers
     this.registerHandlers();
@@ -83,28 +255,58 @@ export class PlannerAgent extends BaseAgent {
    * Handle re-plan request for blocked step
    */
   async handleReplanRequest(message) {
-    const { blockedStep, reason, depth } = message.payload;
+    const { blockedStep, reason, depth, executionContext } = message.payload;
 
     this.status = AgentStatus.WORKING;
 
     try {
       // Check depth limit
       if (depth >= PlanDepth.LEVEL_3) {
-        return message.createResponse(MessageType.PLAN_RESPONSE, {
+        return message.createResponse(MessageType.SUBPLAN_RESPONSE, {
           success: false,
           error: 'Maximum re-planning depth reached (3 levels)',
+          depthLimitReached: true,
         });
       }
+
+      // Track sub-plan attempts for this step
+      const stepAttempts = this.subPlanAttempts.get(blockedStep.id) || 0;
+      if (stepAttempts >= this.maxSubPlanAttempts) {
+        return message.createResponse(MessageType.SUBPLAN_RESPONSE, {
+          success: false,
+          error: `Maximum sub-plan attempts (${this.maxSubPlanAttempts}) reached for this step`,
+          maxAttemptsReached: true,
+        });
+      }
+      this.subPlanAttempts.set(blockedStep.id, stepAttempts + 1);
+
+      // Update execution context if provided
+      if (executionContext) {
+        this.updateExecutionContext(executionContext);
+      }
+
+      // Record the block reason for future reference
+      this.executionContext.blockedReasons.push({
+        stepId: blockedStep.id,
+        reason,
+        depth,
+        timestamp: Date.now(),
+      });
 
       const subPlan = await this.createSubPlan(blockedStep, reason, depth + 1);
 
       // Store in history
       this.addToHistory(subPlan);
 
+      // Assess plan quality
+      const assessment = this.assessPlanQuality(subPlan);
+
       return message.createResponse(MessageType.SUBPLAN_RESPONSE, {
         success: true,
         plan: subPlan,
         depth: depth + 1,
+        attempt: stepAttempts + 1,
+        assessment,
       });
 
     } catch (error) {
@@ -114,6 +316,21 @@ export class PlannerAgent extends BaseAgent {
       });
     } finally {
       this.status = AgentStatus.IDLE;
+    }
+  }
+
+  /**
+   * Update execution context with new information
+   */
+  updateExecutionContext(context) {
+    if (context.completedSteps) {
+      this.executionContext.completedSteps.push(...context.completedSteps);
+    }
+    if (context.failedSteps) {
+      this.executionContext.failedSteps.push(...context.failedSteps);
+    }
+    if (context.successfulApproaches) {
+      this.executionContext.successfulApproaches.push(...context.successfulApproaches);
     }
   }
 
@@ -139,13 +356,144 @@ export class PlannerAgent extends BaseAgent {
     const plan = this.parsePlanResponse(result.response, goal);
     plan.depth = PlanDepth.ROOT;
 
+    // Parse and store dependencies
+    this.parseDependencies(result.response, plan);
+
+    // Assess plan quality
+    plan.qualityAssessment = this.assessPlanQuality(plan);
+
     return plan;
+  }
+
+  /**
+   * Assess the quality of a plan
+   */
+  assessPlanQuality(plan) {
+    const assessment = new PlanQualityAssessment(plan);
+
+    // Check for minimum steps
+    if (plan.steps.length < MIN_PLAN_STEPS) {
+      assessment.addIssue('major', `Plan has only ${plan.steps.length} steps, minimum is ${MIN_PLAN_STEPS}`);
+    }
+
+    // Check for overly complex plans
+    if (plan.steps.length > MAX_PLAN_STEPS) {
+      assessment.addIssue('minor', `Plan exceeds ${MAX_PLAN_STEPS} steps, may be too granular`);
+    }
+
+    // Check step quality
+    for (const step of plan.steps) {
+      // Check for vague descriptions
+      if (step.description.length < 15) {
+        assessment.addIssue('minor', `Step ${step.number} has a very short description`);
+      }
+
+      // Check for action verbs
+      const actionVerbs = ['create', 'implement', 'add', 'update', 'fix', 'refactor', 'test', 'configure', 'setup', 'build', 'write', 'modify', 'remove', 'delete', 'integrate'];
+      const hasActionVerb = actionVerbs.some(verb =>
+        step.description.toLowerCase().startsWith(verb) ||
+        step.description.toLowerCase().includes(` ${verb} `)
+      );
+      if (!hasActionVerb) {
+        assessment.addIssue('minor', `Step ${step.number} may not be actionable (no clear action verb)`);
+      }
+
+      // Check for testability indicators
+      if (step.complexity !== 'simple') {
+        const testableIndicators = ['test', 'verify', 'validate', 'check', 'ensure'];
+        const hasTestable = testableIndicators.some(ind =>
+          step.description.toLowerCase().includes(ind)
+        );
+        if (hasTestable) {
+          assessment.addStrength(`Step ${step.number} includes verification`);
+        }
+      }
+    }
+
+    // Check for analysis
+    if (!plan.analysis || plan.analysis.length < 20) {
+      assessment.addIssue('minor', 'Plan analysis is missing or too brief');
+    } else {
+      assessment.addStrength('Plan includes thoughtful analysis');
+    }
+
+    // Check complexity distribution
+    const complexityCount = {
+      simple: plan.steps.filter(s => s.complexity === 'simple').length,
+      medium: plan.steps.filter(s => s.complexity === 'medium').length,
+      complex: plan.steps.filter(s => s.complexity === 'complex').length,
+    };
+
+    if (complexityCount.complex > plan.steps.length * 0.5) {
+      assessment.addIssue('major', 'More than 50% of steps are complex - consider breaking them down');
+    }
+
+    if (complexityCount.simple + complexityCount.medium > 0) {
+      assessment.addStrength('Plan has a mix of complexity levels');
+    }
+
+    // Calculate final score
+    assessment.calculateScore();
+
+    // Add suggestions based on issues
+    if (assessment.issues.length > 0) {
+      if (assessment.issues.some(i => i.description.includes('complex'))) {
+        assessment.addSuggestion('Break complex steps into smaller, more manageable tasks');
+      }
+      if (assessment.issues.some(i => i.description.includes('actionable'))) {
+        assessment.addSuggestion('Start each step with a clear action verb');
+      }
+    }
+
+    return assessment;
+  }
+
+  /**
+   * Parse dependencies from plan response
+   */
+  parseDependencies(response, plan) {
+    // Reset dependency tracker for new plan
+    this.dependencyTracker = new DependencyTracker();
+
+    // Look for DEPENDENCIES section
+    const depsMatch = response.match(/DEPENDENCIES:\s*\n([\s\S]*?)(?=RISKS:|TOTAL_STEPS:|$)/i);
+    if (!depsMatch || depsMatch[1].toLowerCase().includes('none')) {
+      // Assume sequential dependencies by default
+      for (let i = 1; i < plan.steps.length; i++) {
+        this.dependencyTracker.addDependency(
+          plan.steps[i].id,
+          plan.steps[i - 1].id
+        );
+      }
+      return;
+    }
+
+    // Parse explicit dependencies like "Step 2 depends on Step 1"
+    const depLines = depsMatch[1].split('\n');
+    for (const line of depLines) {
+      const depMatch = line.match(/step\s*(\d+)\s*(?:depends on|requires|needs)\s*step\s*(\d+)/i);
+      if (depMatch) {
+        const dependent = parseInt(depMatch[1], 10);
+        const dependsOn = parseInt(depMatch[2], 10);
+
+        const dependentStep = plan.steps.find(s => s.number === dependent);
+        const dependsOnStep = plan.steps.find(s => s.number === dependsOn);
+
+        if (dependentStep && dependsOnStep) {
+          this.dependencyTracker.addDependency(dependentStep.id, dependsOnStep.id);
+        }
+      }
+    }
+
+    // Store dependencies in plan
+    plan.dependencies = this.dependencyTracker.toJSON();
   }
 
   /**
    * Create a sub-plan for a blocked step
    */
   async createSubPlan(blockedStep, reason, depth) {
+    // Build context-aware prompt
     const prompt = this.buildSubPlanPrompt(blockedStep, reason, depth);
 
     const result = await this.client.sendPrompt(prompt, {
@@ -162,13 +510,109 @@ export class PlannerAgent extends BaseAgent {
     subPlan.depth = depth;
     subPlan.parentStepId = blockedStep.id;
     subPlan.blockReason = reason;
+    subPlan.attempt = this.subPlanAttempts.get(blockedStep.id) || 1;
 
-    // Limit sub-plan steps
-    if (subPlan.steps.length > MAX_SUBPLAN_STEPS) {
-      subPlan.steps = subPlan.steps.slice(0, MAX_SUBPLAN_STEPS);
+    // Limit sub-plan steps based on depth
+    const maxSteps = depth === 1 ? MAX_SUBPLAN_STEPS :
+                     depth === 2 ? 3 :
+                     2;  // Level 3 should be minimal
+    if (subPlan.steps.length > maxSteps) {
+      subPlan.steps = subPlan.steps.slice(0, maxSteps);
     }
 
+    // Assess quality
+    subPlan.qualityAssessment = this.assessPlanQuality(subPlan);
+
     return subPlan;
+  }
+
+  /**
+   * Create an adaptive sub-plan that learns from previous attempts
+   */
+  async createAdaptiveSubPlan(blockedStep, reason, depth, previousAttempts = []) {
+    // Build a prompt that incorporates learnings from failed attempts
+    const prompt = this.buildAdaptiveSubPlanPrompt(blockedStep, reason, depth, previousAttempts);
+
+    const result = await this.client.sendPrompt(prompt, {
+      newSession: true,
+      timeout: 5 * 60 * 1000,
+      model: this.model,
+    });
+
+    const subPlan = this.parsePlanResponse(
+      result.response,
+      `Adaptive approach for: ${blockedStep.description}`
+    );
+
+    subPlan.depth = depth;
+    subPlan.parentStepId = blockedStep.id;
+    subPlan.blockReason = reason;
+    subPlan.isAdaptive = true;
+    subPlan.previousAttemptCount = previousAttempts.length;
+
+    return subPlan;
+  }
+
+  /**
+   * Build adaptive sub-plan prompt with learnings from previous attempts
+   */
+  buildAdaptiveSubPlanPrompt(blockedStep, reason, depth, previousAttempts) {
+    const depthLabel = depth === 1 ? 'SUB-PLAN' :
+                       depth === 2 ? 'SUB-SUB-PLAN' :
+                       'LEVEL-3 RECOVERY PLAN';
+
+    const previousAttemptsSection = previousAttempts.length > 0
+      ? `\n## PREVIOUS ATTEMPTS (DO NOT REPEAT THESE)\n${previousAttempts.map((a, i) =>
+          `Attempt ${i + 1}: ${a.approach} - FAILED because: ${a.failureReason}`
+        ).join('\n')}`
+      : '';
+
+    const successfulApproachesSection = this.executionContext.successfulApproaches.length > 0
+      ? `\n## SUCCESSFUL PATTERNS (Consider these)\n${this.executionContext.successfulApproaches.slice(-3).map(a =>
+          `- ${a.description}`
+        ).join('\n')}`
+      : '';
+
+    return `You are an expert software architect. A step has been blocked multiple times and needs a fresh approach.
+
+## BLOCKED STEP
+Step: ${blockedStep.description}
+Complexity: ${blockedStep.complexity}
+
+## BLOCK REASON
+${reason}
+
+## CURRENT DEPTH
+Creating: ${depthLabel} (Level ${depth} of max 3)
+${previousAttemptsSection}
+${successfulApproachesSection}
+
+## YOUR TASK
+
+Create a DIFFERENT approach that avoids the previous failure patterns. Think creatively:
+- Can we achieve the same goal through a completely different method?
+- Is there a simpler version we can implement first?
+- Can we skip this and handle it differently later?
+- Is there a workaround that doesn't require what was blocked?
+
+## OUTPUT FORMAT
+
+Respond in EXACTLY this format:
+
+ANALYSIS:
+[Why previous approaches failed and what new direction you'll take]
+
+ALTERNATIVE_APPROACH:
+[1-2 sentences describing the NEW strategy]
+
+PLAN:
+1. [Sub-step description] | [simple/medium/complex]
+2. [Sub-step description] | [simple/medium/complex]
+...
+
+TOTAL_STEPS: [number]
+
+Keep to 2-${Math.max(2, MAX_SUBPLAN_STEPS - depth)} steps maximum.`;
   }
 
   /**
@@ -484,12 +928,70 @@ Keep to 2-${MAX_SUBPLAN_STEPS} steps maximum. Be specific and actionable.`;
       ...super.getStats(),
       model: this.model,
       plansCreated: this.planHistory.length,
+      subPlanAttempts: Object.fromEntries(this.subPlanAttempts),
+      executionContext: {
+        completedSteps: this.executionContext.completedSteps.length,
+        failedSteps: this.executionContext.failedSteps.length,
+        blockedReasons: this.executionContext.blockedReasons.length,
+      },
       recentPlans: this.planHistory.slice(-5).map(p => ({
         goal: p.goal.substring(0, 50),
         depth: p.depth,
         steps: p.stepCount,
       })),
     };
+  }
+
+  /**
+   * Get dependency tracker for external use
+   */
+  getDependencyTracker() {
+    return this.dependencyTracker;
+  }
+
+  /**
+   * Check if a step can be executed based on dependencies
+   */
+  canExecuteStep(stepId, completedStepIds) {
+    return this.dependencyTracker.canExecute(stepId, new Set(completedStepIds));
+  }
+
+  /**
+   * Get optimal execution order for plan steps
+   */
+  getExecutionOrder(plan) {
+    return this.dependencyTracker.getExecutionOrder(plan.steps);
+  }
+
+  /**
+   * Record a successful approach for future reference
+   */
+  recordSuccessfulApproach(description, stepId) {
+    this.executionContext.successfulApproaches.push({
+      description,
+      stepId,
+      timestamp: Date.now(),
+    });
+
+    // Limit stored approaches
+    if (this.executionContext.successfulApproaches.length > 20) {
+      this.executionContext.successfulApproaches =
+        this.executionContext.successfulApproaches.slice(-20);
+    }
+  }
+
+  /**
+   * Reset execution context for new goal
+   */
+  resetExecutionContext() {
+    this.executionContext = {
+      completedSteps: [],
+      failedSteps: [],
+      blockedReasons: [],
+      successfulApproaches: [],
+    };
+    this.subPlanAttempts.clear();
+    this.dependencyTracker = new DependencyTracker();
   }
 
   /**
@@ -516,4 +1018,5 @@ Keep to 2-${MAX_SUBPLAN_STEPS} steps maximum. Be specific and actionable.`;
   }
 }
 
+export { PlanQualityAssessment, DependencyTracker };
 export default PlannerAgent;

@@ -9,6 +9,8 @@ import {
   AgentStatus,
   PlanDepth,
   VerificationType,
+  WorkflowPhase,
+  FixCycleStatus,
   BaseAgent,
   AgentMessage,
   PlanStep,
@@ -16,6 +18,8 @@ import {
   TestResult,
   VerificationResult,
   OrchestrationState,
+  TimeBudgetManager,
+  WorkflowLoop,
 } from '../interfaces.js';
 
 describe('MessageType enum', () => {
@@ -320,5 +324,171 @@ describe('OrchestrationState', () => {
 
     expect(state.eventLog.length).toBe(1);
     expect(state.eventLog[0].type).toBe('step_started');
+  });
+});
+
+describe('WorkflowPhase enum', () => {
+  it('should have all workflow phases', () => {
+    expect(WorkflowPhase.INITIALIZING).toBe('initializing');
+    expect(WorkflowPhase.PLANNING).toBe('planning');
+    expect(WorkflowPhase.PLAN_REVIEW).toBe('plan_review');
+    expect(WorkflowPhase.EXECUTING).toBe('executing');
+    expect(WorkflowPhase.TESTING).toBe('testing');
+    expect(WorkflowPhase.FIXING).toBe('fixing');
+    expect(WorkflowPhase.VERIFYING).toBe('verifying');
+    expect(WorkflowPhase.REPLANNING).toBe('replanning');
+    expect(WorkflowPhase.COMPLETED).toBe('completed');
+    expect(WorkflowPhase.FAILED).toBe('failed');
+    expect(WorkflowPhase.ABORTED).toBe('aborted');
+    expect(WorkflowPhase.TIME_EXPIRED).toBe('time_expired');
+  });
+});
+
+describe('FixCycleStatus enum', () => {
+  it('should have all fix cycle statuses', () => {
+    expect(FixCycleStatus.NOT_STARTED).toBe('not_started');
+    expect(FixCycleStatus.IN_PROGRESS).toBe('in_progress');
+    expect(FixCycleStatus.RESOLVED).toBe('resolved');
+    expect(FixCycleStatus.MAX_ATTEMPTS_REACHED).toBe('max_attempts_reached');
+  });
+});
+
+describe('TimeBudgetManager', () => {
+  let budget;
+
+  beforeEach(() => {
+    // 1 hour budget for tests
+    budget = new TimeBudgetManager(60 * 60 * 1000);
+  });
+
+  it('should initialize with correct allocations', () => {
+    expect(budget.totalTime).toBe(60 * 60 * 1000);
+    expect(budget.phaseAllocations.planning).toBeLessThanOrEqual(15 * 60 * 1000);
+    expect(budget.phaseAllocations.execution).toBe(0.8 * 60 * 60 * 1000);
+    expect(budget.phaseAllocations.verification).toBeLessThanOrEqual(10 * 60 * 1000);
+  });
+
+  it('should track elapsed time', () => {
+    const elapsed = budget.getElapsed();
+    expect(elapsed).toBeGreaterThanOrEqual(0);
+    expect(elapsed).toBeLessThan(1000); // Should be very small
+  });
+
+  it('should calculate remaining time', () => {
+    const remaining = budget.getRemaining();
+    expect(remaining).toBeLessThanOrEqual(budget.totalTime);
+    expect(remaining).toBeGreaterThan(0);
+  });
+
+  it('should not be expired initially', () => {
+    expect(budget.isExpired()).toBe(false);
+  });
+
+  it('should track phase timing', () => {
+    budget.startPhase('planning');
+    expect(budget.currentPhase).toBe('planning');
+
+    budget.endPhase();
+    expect(budget.currentPhase).toBeNull();
+    expect(budget.phaseElapsed.planning).toBeGreaterThanOrEqual(0);
+  });
+
+  it('should calculate per-step budget', () => {
+    const perStep = budget.getPerStepBudget(5);
+    expect(perStep).toBe(Math.floor(budget.phaseAllocations.execution / 5));
+  });
+
+  it('should provide summary', () => {
+    const summary = budget.getSummary();
+
+    expect(summary.total).toBe(budget.totalTime);
+    expect(summary.elapsed).toBeGreaterThanOrEqual(0);
+    expect(summary.remaining).toBeLessThanOrEqual(summary.total);
+    expect(summary.expired).toBe(false);
+    expect(summary.percentUsed).toBeGreaterThanOrEqual(0);
+  });
+
+  it('should format remaining time correctly', () => {
+    const formatted = budget.formatRemaining();
+    expect(typeof formatted).toBe('string');
+    expect(formatted.length).toBeGreaterThan(0);
+  });
+});
+
+describe('WorkflowLoop', () => {
+  let loop;
+
+  beforeEach(() => {
+    loop = new WorkflowLoop();
+  });
+
+  it('should initialize in INITIALIZING phase', () => {
+    expect(loop.phase).toBe(WorkflowPhase.INITIALIZING);
+    expect(loop.cycleCount).toBe(0);
+    expect(loop.history.length).toBe(0);
+  });
+
+  it('should transition between phases', () => {
+    const transition = loop.transition(WorkflowPhase.PLANNING);
+
+    expect(transition.from).toBe(WorkflowPhase.INITIALIZING);
+    expect(transition.to).toBe(WorkflowPhase.PLANNING);
+    expect(loop.phase).toBe(WorkflowPhase.PLANNING);
+    expect(loop.history.length).toBe(1);
+  });
+
+  it('should track step cycles', () => {
+    loop.transition(WorkflowPhase.PLANNING);
+    loop.transition(WorkflowPhase.EXECUTING);
+    expect(loop.stepCycleCount).toBe(1);
+
+    loop.transition(WorkflowPhase.TESTING);
+    loop.transition(WorkflowPhase.EXECUTING);
+    expect(loop.stepCycleCount).toBe(2);
+  });
+
+  it('should track fix cycles', () => {
+    loop.transition(WorkflowPhase.EXECUTING);
+    loop.transition(WorkflowPhase.TESTING);
+    loop.transition(WorkflowPhase.FIXING);
+    expect(loop.fixCycleCount).toBe(1);
+
+    loop.transition(WorkflowPhase.TESTING);
+    loop.transition(WorkflowPhase.FIXING);
+    expect(loop.fixCycleCount).toBe(2);
+  });
+
+  it('should detect terminal phases', () => {
+    expect(loop.isTerminal()).toBe(false);
+
+    loop.transition(WorkflowPhase.COMPLETED);
+    expect(loop.isTerminal()).toBe(true);
+  });
+
+  it('should detect all terminal phases', () => {
+    const terminalPhases = [
+      WorkflowPhase.COMPLETED,
+      WorkflowPhase.FAILED,
+      WorkflowPhase.ABORTED,
+      WorkflowPhase.TIME_EXPIRED,
+    ];
+
+    for (const phase of terminalPhases) {
+      const testLoop = new WorkflowLoop();
+      testLoop.transition(phase);
+      expect(testLoop.isTerminal()).toBe(true);
+    }
+  });
+
+  it('should provide workflow summary', () => {
+    loop.transition(WorkflowPhase.PLANNING);
+    loop.transition(WorkflowPhase.EXECUTING);
+
+    const summary = loop.getSummary();
+
+    expect(summary.currentPhase).toBe(WorkflowPhase.EXECUTING);
+    expect(summary.stepCycleCount).toBe(1);
+    expect(summary.isTerminal).toBe(false);
+    expect(summary.recentTransitions.length).toBe(2);
   });
 });

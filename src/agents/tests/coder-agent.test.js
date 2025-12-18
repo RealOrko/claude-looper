@@ -236,7 +236,7 @@ COMPLETE
     it('should handle CODE_REQUEST message', async () => {
       mockClient.startSession.mockResolvedValue({
         sessionId: 'sess',
-        response: '### Summary\nDone\n### Status\nCOMPLETE',
+        response: '### Summary\nDone\n\n### Files Modified\n- `src/feature.js`\n\n### Tests Created\n- `test/feature.test.js`\n\n### Status\nCOMPLETE',
       });
 
       const request = new AgentMessage(
@@ -246,6 +246,7 @@ COMPLETE
         {
           step: new PlanStep(1, 'Implement feature', 'low'),
           context: {},
+          enforceTests: false, // Disable test enforcement for this test
         }
       );
 

@@ -1,16 +1,50 @@
 /**
  * Orchestrator - Main execution loop coordinating all agents
  *
- * The Orchestrator manages the complete workflow:
- * 1. Planning phase - Planner creates execution plan
- * 2. Execution phase - For each step:
- *    a. Coder implements the step
- *    b. Tester validates the implementation
- *    c. If tests fail, Tester creates fix plan → Coder fixes → loop
- *    d. Supervisor verifies all outputs
- * 3. Verification phase - Final goal verification
+ * The Orchestrator manages the complete development workflow:
  *
- * Supports recursive re-planning up to 3 levels deep when steps are blocked.
+ * ┌─────────────────────────────────────────────────────────────────────────────┐
+ * │                       REAL DEVELOPMENT WORKFLOW                             │
+ * │                                                                             │
+ * │  ┌─────────────┐    ┌─────────────┐    ┌─────────────┐    ┌─────────────┐ │
+ * │  │  PLANNING   │───▶│ PLAN REVIEW │───▶│  EXECUTION  │───▶│ VERIFICATION│ │
+ * │  │   (Planner) │    │(Supervisor) │    │   (Loop)    │    │ (Supervisor)│ │
+ * │  └─────────────┘    └─────────────┘    └─────────────┘    └─────────────┘ │
+ * │        │                  │                   │                  │         │
+ * │        │                  │                   │                  │         │
+ * │        │            ┌─────┴──────┐            │                  │         │
+ * │        │            │  Approved? │            │                  │         │
+ * │        │            └─────┬──────┘            │                  │         │
+ * │        │              YES │ NO──►REPLAN       │                  │         │
+ * │        │                  │                   │                  │         │
+ * │        │                  ▼                   │                  │         │
+ * │        │         STEP EXECUTION LOOP         │                  │         │
+ * │        │    ┌─────────────────────────┐      │                  │         │
+ * │        │    │  CODER ──► TESTER       │      │                  │         │
+ * │        │    │    ▲          │         │      │                  │         │
+ * │        │    │    │    [Pass?]         │      │                  │         │
+ * │        │    │  Fix   YES │ NO──►Fix   │      │                  │         │
+ * │        │    │    │       ▼            │      │                  │         │
+ * │        │    │    └── SUPERVISOR       │      │                  │         │
+ * │        │    │          │              │      │                  │         │
+ * │        │    │    [Approved?]          │      │                  │         │
+ * │        │    │    YES │  NO──►Retry    │      │                  │         │
+ * │        │    │        ▼                │      │                  │         │
+ * │        │    │    NEXT STEP            │      │                  │         │
+ * │        │    └─────────────────────────┘      │                  │         │
+ * │        │                                     │                  │         │
+ * │        └──────── TIME EXPIRED ───────────────┴──────────────────┘         │
+ * │                        ▼                                                   │
+ * │               GRACEFUL SHUTDOWN                                            │
+ * └─────────────────────────────────────────────────────────────────────────────┘
+ *
+ * Features:
+ * - Pre-execution plan review by Supervisor (quality gate)
+ * - Time-bounded execution with phase budgets
+ * - Fix cycle tracking with max attempts
+ * - Progress monitoring and stall detection
+ * - Recursive re-planning up to 3 levels deep
+ * - Comprehensive event system for monitoring
  */
 
 import { EventEmitter } from 'events';
@@ -22,13 +56,18 @@ import {
   VerificationType,
   AgentMessage,
   OrchestrationState,
+  WorkflowPhase,
+  TimeBudgetManager,
+  WorkflowLoop,
 } from './interfaces.js';
 import { MessageBus, Messages } from './message-bus.js';
+import { QualityGateType } from './supervisor-agent.js';
 
 // Limits
 const MAX_FIX_CYCLES = 3; // Max test-fix cycles per step
 const MAX_STEP_ATTEMPTS = 3; // Max attempts per step before re-planning
 const REQUIRE_TESTS_FOR_COMPLETION = true; // Require tests before marking step complete
+const PROGRESS_CHECK_INTERVAL = 5 * 60 * 1000; // Check progress every 5 minutes
 
 /**
  * Orchestration Loop Manager
@@ -43,6 +82,10 @@ export class Orchestrator extends EventEmitter {
       verifyAllOutputs: config.verifyAllOutputs !== false, // Default true
       requireTests: config.requireTests !== false, // Default true - require tests for completion
       timeLimit: config.timeLimit || 2 * 60 * 60 * 1000, // 2 hours default
+      requirePrePlanReview: config.requirePrePlanReview !== false, // Default true
+      enableProgressChecks: config.enableProgressChecks !== false, // Default true
+      progressCheckInterval: config.progressCheckInterval || PROGRESS_CHECK_INTERVAL,
+      maxPlanRevisions: config.maxPlanRevisions || 3, // Max times to revise a rejected plan
       ...config,
     };
 
@@ -52,6 +95,12 @@ export class Orchestrator extends EventEmitter {
     this.isRunning = false;
     this.shouldStop = false;
     this.startTime = null;
+
+    // Workflow management
+    this.workflowLoop = null;
+    this.timeBudget = null;
+    this.lastProgressCheck = null;
+    this.planRevisionCount = 0;
 
     // Set up message bus event forwarding
     this.setupMessageBusEvents();
@@ -114,10 +163,25 @@ export class Orchestrator extends EventEmitter {
     this.state.context = context;
     this.startTime = Date.now();
 
+    // Initialize workflow management
+    this.workflowLoop = new WorkflowLoop();
+    this.timeBudget = new TimeBudgetManager(this.config.timeLimit);
+    this.lastProgressCheck = Date.now();
+    this.planRevisionCount = 0;
+
+    // Reset agents for new goal if they support it
+    for (const agent of Object.values(this.agents)) {
+      if (agent.resetForNewGoal) {
+        agent.resetForNewGoal();
+      }
+    }
+
     this.emit('initialized', {
       goal: primaryGoal,
       context,
       timestamp: this.startTime,
+      timeLimit: this.config.timeLimit,
+      timeBudget: this.timeBudget.getSummary(),
     });
 
     return this.state;
@@ -134,32 +198,252 @@ export class Orchestrator extends EventEmitter {
     this.isRunning = true;
     this.shouldStop = false;
 
-    this.emit('started', { state: this.state.getSummary() });
+    this.emit('started', {
+      state: this.state.getSummary(),
+      workflowPhase: this.workflowLoop.phase,
+      timeBudget: this.timeBudget.getSummary(),
+    });
 
     try {
       // Phase 1: Planning
+      this.workflowLoop.transition(WorkflowPhase.PLANNING);
+      this.timeBudget.startPhase('planning');
       await this.planningPhase();
+      this.timeBudget.endPhase();
 
-      if (this.shouldStop) return this.generateReport();
+      if (this.shouldStop || this.checkTimeExpired()) {
+        return this.generateReport();
+      }
+
+      // Phase 1.5: Pre-execution Plan Review (NEW)
+      if (this.config.requirePrePlanReview) {
+        this.workflowLoop.transition(WorkflowPhase.PLAN_REVIEW);
+        const approved = await this.planReviewPhase();
+
+        if (!approved) {
+          this.state.status = 'failed';
+          this.emit('plan_rejected', {
+            revisions: this.planRevisionCount,
+            maxRevisions: this.config.maxPlanRevisions,
+          });
+          return this.generateReport();
+        }
+      }
+
+      if (this.shouldStop || this.checkTimeExpired()) {
+        return this.generateReport();
+      }
 
       // Phase 2: Execution Loop
+      this.workflowLoop.transition(WorkflowPhase.EXECUTING);
+      this.timeBudget.startPhase('execution');
       await this.executionPhase();
+      this.timeBudget.endPhase();
 
-      if (this.shouldStop) return this.generateReport();
+      if (this.shouldStop || this.checkTimeExpired()) {
+        return this.generateReport();
+      }
 
       // Phase 3: Final Verification
+      this.workflowLoop.transition(WorkflowPhase.VERIFYING);
+      this.timeBudget.startPhase('verification');
       await this.verificationPhase();
+      this.timeBudget.endPhase();
 
       return this.generateReport();
 
     } catch (error) {
       this.state.status = 'failed';
+      this.workflowLoop.transition(WorkflowPhase.FAILED, { error: error.message });
       this.emit('error', { type: 'fatal', error: error.message });
       throw error;
 
     } finally {
       this.isRunning = false;
       this.state.endTime = Date.now();
+
+      // Mark final phase
+      if (!this.workflowLoop.isTerminal()) {
+        if (this.state.status === 'completed') {
+          this.workflowLoop.transition(WorkflowPhase.COMPLETED);
+        } else if (this.timeBudget.isExpired()) {
+          this.workflowLoop.transition(WorkflowPhase.TIME_EXPIRED);
+        }
+      }
+    }
+  }
+
+  /**
+   * Phase 1.5: Pre-execution Plan Review
+   * Supervisor reviews and approves the plan before execution begins
+   */
+  async planReviewPhase() {
+    this.emit('phase_started', { phase: 'plan_review' });
+
+    let approved = false;
+    let revisionLoop = 0;
+
+    while (!approved && revisionLoop < this.config.maxPlanRevisions) {
+      // Request pre-execution review from Supervisor
+      const reviewResult = await this.verifyOutput(
+        VerificationType.PLAN_PRE,
+        this.state.currentPlan,
+        {
+          goal: this.state.primaryGoal,
+          phase: WorkflowPhase.PLAN_REVIEW,
+          metrics: this.state.metrics,
+        },
+      );
+
+      this.emit('plan_reviewed', {
+        revision: revisionLoop,
+        result: reviewResult,
+        qualityGate: reviewResult.qualityGate,
+      });
+
+      // Check if quality gate passed
+      if (reviewResult.qualityGate?.passed || reviewResult.verified) {
+        approved = true;
+        this.emit('plan_approved', {
+          plan: this.state.currentPlan,
+          score: reviewResult.score,
+        });
+      } else {
+        revisionLoop++;
+        this.planRevisionCount++;
+
+        this.emit('plan_needs_revision', {
+          revision: revisionLoop,
+          issues: reviewResult.issues,
+          missingSteps: reviewResult.missingSteps,
+          risks: reviewResult.risks,
+          reason: reviewResult.reason,
+        });
+
+        // Request plan revision from Planner
+        if (revisionLoop < this.config.maxPlanRevisions) {
+          this.workflowLoop.transition(WorkflowPhase.REPLANNING);
+
+          const revisionRequest = Messages.replanRequest(
+            AgentRole.ORCHESTRATOR,
+            null, // No specific step - revising whole plan
+            `Plan review feedback: ${reviewResult.reason}. Issues: ${reviewResult.issues?.map(i => i.description).join(', ')}`,
+            0, // Root level
+          );
+          revisionRequest.payload.isRevision = true;
+          revisionRequest.payload.previousPlan = this.state.currentPlan;
+          revisionRequest.payload.feedback = {
+            issues: reviewResult.issues,
+            missingSteps: reviewResult.missingSteps,
+            risks: reviewResult.risks,
+          };
+
+          this.state.updateAgentState(AgentRole.PLANNER, AgentStatus.WORKING);
+
+          try {
+            const revisionResponse = await this.messageBus.request(revisionRequest);
+            this.state.updateAgentState(AgentRole.PLANNER, AgentStatus.IDLE, revisionResponse);
+
+            if (revisionResponse.payload?.plan) {
+              this.state.currentPlan = revisionResponse.payload.plan;
+              this.state.metrics.totalSteps = this.state.currentPlan.steps.length;
+              this.state.metrics.replanCount++;
+
+              this.emit('plan_revised', {
+                revision: revisionLoop,
+                plan: this.state.currentPlan,
+              });
+
+              this.workflowLoop.transition(WorkflowPhase.PLAN_REVIEW);
+            } else {
+              // Planner couldn't revise - break loop
+              break;
+            }
+          } catch (error) {
+            this.state.updateAgentState(AgentRole.PLANNER, AgentStatus.ERROR);
+            this.emit('warning', { message: `Plan revision failed: ${error.message}` });
+            break;
+          }
+        }
+      }
+
+      // Check time
+      if (this.checkTimeExpired()) {
+        break;
+      }
+    }
+
+    this.emit('phase_completed', {
+      phase: 'plan_review',
+      approved,
+      revisions: revisionLoop,
+    });
+
+    return approved;
+  }
+
+  /**
+   * Check if time has expired and handle gracefully
+   */
+  checkTimeExpired() {
+    if (this.timeBudget.isExpired()) {
+      this.state.status = 'time_expired';
+      this.workflowLoop.transition(WorkflowPhase.TIME_EXPIRED);
+      this.shouldStop = true;
+
+      this.emit('time_expired', {
+        elapsed: this.timeBudget.getElapsed(),
+        limit: this.config.timeLimit,
+        phase: this.workflowLoop.phase,
+      });
+
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Check and perform progress monitoring
+   */
+  async checkProgress() {
+    if (!this.config.enableProgressChecks) return;
+
+    const now = Date.now();
+    if (now - this.lastProgressCheck < this.config.progressCheckInterval) {
+      return; // Not time yet
+    }
+
+    this.lastProgressCheck = now;
+
+    const progressResult = await this.verifyOutput(
+      VerificationType.PROGRESS,
+      {
+        currentStep: this.state.currentPlan?.getCurrentStep(),
+        metrics: this.state.metrics,
+        elapsed: this.timeBudget.getElapsed(),
+        remaining: this.timeBudget.getRemaining(),
+      },
+      {
+        goal: this.state.primaryGoal,
+        phase: this.workflowLoop.phase,
+        metrics: this.state.metrics,
+      },
+    );
+
+    this.emit('progress_check', {
+      result: progressResult,
+      isStalled: progressResult.isStalled,
+      pace: progressResult.pace,
+      recommendation: progressResult.recommendation,
+    });
+
+    // Handle stall or intervention recommendations
+    if (progressResult.actionNeeded === 'ABORT') {
+      this.shouldStop = true;
+      this.state.status = 'aborted';
+      this.emit('abort_recommended', { reason: progressResult.reason });
+    } else if (progressResult.actionNeeded === 'INTERVENTION') {
+      this.emit('intervention_needed', { reason: progressResult.reason });
     }
   }
 
@@ -208,8 +492,11 @@ export class Orchestrator extends EventEmitter {
     this.state.status = 'executing';
     this.emit('phase_started', { phase: 'execution' });
 
-    while (!this.state.currentPlan.isComplete() && !this.shouldStop && !this.isTimeExpired()) {
+    while (!this.state.currentPlan.isComplete() && !this.shouldStop && !this.checkTimeExpired()) {
       this.state.iteration++;
+
+      // Periodic progress check
+      await this.checkProgress();
 
       const currentStep = this.state.currentPlan.getCurrentStep();
       if (!currentStep) break;
@@ -562,12 +849,17 @@ export class Orchestrator extends EventEmitter {
   /**
    * Request verification from Supervisor
    */
-  async verifyOutput(type, target) {
+  async verifyOutput(type, target, context = {}) {
     const verifyRequest = Messages.verifyRequest(
       AgentRole.ORCHESTRATOR,
       type,
       target,
-      { state: this.state.getSummary() }
+      {
+        state: this.state.getSummary(),
+        phase: this.workflowLoop?.phase,
+        metrics: this.state.metrics,
+        ...context,
+      },
     );
 
     this.state.updateAgentState(AgentRole.SUPERVISOR, AgentStatus.WORKING);
@@ -647,9 +939,12 @@ export class Orchestrator extends EventEmitter {
   }
 
   /**
-   * Check if time limit has been exceeded
+   * Check if time limit has been exceeded (simple check without side effects)
    */
   isTimeExpired() {
+    if (this.timeBudget) {
+      return this.timeBudget.isExpired();
+    }
     if (!this.startTime) return false;
     return Date.now() - this.startTime >= this.config.timeLimit;
   }
@@ -681,12 +976,41 @@ export class Orchestrator extends EventEmitter {
       } : null,
       metrics: this.state.metrics,
       planDepth: this.state.getPlanDepth(),
+      // New workflow management data
+      workflow: this.workflowLoop ? {
+        currentPhase: this.workflowLoop.phase,
+        isTerminal: this.workflowLoop.isTerminal(),
+        cycleCount: this.workflowLoop.cycleCount,
+        stepCycleCount: this.workflowLoop.stepCycleCount,
+        fixCycleCount: this.workflowLoop.fixCycleCount,
+        recentTransitions: this.workflowLoop.history.slice(-10),
+      } : null,
+      timeBudget: this.timeBudget ? {
+        ...this.timeBudget.getSummary(),
+        formattedRemaining: this.timeBudget.formatRemaining(),
+      } : null,
+      planRevisions: this.planRevisionCount,
       messageBusStats: this.messageBus.getStats(),
       agentStats: Object.entries(this.agents).reduce((acc, [role, agent]) => {
-        acc[role] = agent.getStats?.() || { role, status: 'unknown' };
+        // Use enhanced stats if available
+        acc[role] = agent.getEnhancedStats?.() || agent.getStats?.() || { role, status: 'unknown' };
         return acc;
       }, {}),
       eventLog: this.state.eventLog.slice(-50), // Last 50 events
+    };
+  }
+
+  /**
+   * Get current workflow status (for external monitoring)
+   */
+  getWorkflowStatus() {
+    return {
+      isRunning: this.isRunning,
+      phase: this.workflowLoop?.phase || 'not_initialized',
+      timeBudget: this.timeBudget?.getSummary() || null,
+      metrics: this.state?.metrics || null,
+      currentStep: this.state?.currentPlan?.getCurrentStep()?.description || null,
+      progress: this.state?.currentPlan?.getProgress() || null,
     };
   }
 

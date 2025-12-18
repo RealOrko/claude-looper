@@ -16,7 +16,12 @@ import {
   AgentStatus,
   MessageType,
   AgentMessage,
+  FixCycleStatus,
 } from './interfaces.js';
+
+// Configuration
+const MAX_FIX_ATTEMPTS = 3;
+const REQUIRE_TESTS_DEFAULT = true;
 
 /**
  * Code output structure
@@ -32,6 +37,22 @@ export class CodeOutput {
     this.blocked = false;
     this.blockReason = null;
     this.timestamp = Date.now();
+
+    // Enhanced tracking
+    this.requiresSubPlan = false;
+    this.subPlanReason = null;
+    this.testCoverage = {
+      hasTests: false,
+      testCount: 0,
+      coverageEstimate: 'none', // none, partial, good, excellent
+    };
+    this.implementationQuality = {
+      score: 0,
+      issues: [],
+      strengths: [],
+    };
+    this.fixAttempt = 0;
+    this.fixCycleStatus = FixCycleStatus.NOT_STARTED;
   }
 
   addFile(path, action, content, language = null) {
@@ -93,12 +114,106 @@ export class CodeOutput {
     this.blockReason = reason;
   }
 
+  /**
+   * Request a sub-plan when step is too complex
+   */
+  requestSubPlan(reason) {
+    this.requiresSubPlan = true;
+    this.subPlanReason = reason;
+    this.blocked = true;
+    this.blockReason = `Requires sub-plan: ${reason}`;
+  }
+
+  /**
+   * Update test coverage tracking
+   */
+  updateTestCoverage() {
+    this.testCoverage.testCount = this.tests.length;
+    this.testCoverage.hasTests = this.tests.length > 0;
+
+    // Estimate coverage based on test to file ratio
+    const sourceFiles = this.files.filter(f =>
+      !f.path.includes('test') && !f.path.includes('spec')
+    ).length;
+
+    if (sourceFiles === 0 || this.tests.length === 0) {
+      this.testCoverage.coverageEstimate = 'none';
+    } else if (this.tests.length >= sourceFiles) {
+      this.testCoverage.coverageEstimate = 'good';
+    } else if (this.tests.length >= sourceFiles * 0.5) {
+      this.testCoverage.coverageEstimate = 'partial';
+    } else {
+      this.testCoverage.coverageEstimate = 'minimal';
+    }
+  }
+
+  /**
+   * Assess implementation quality
+   */
+  assessQuality() {
+    let score = 100;
+    const issues = [];
+    const strengths = [];
+
+    // Check for tests
+    if (!this.testCoverage.hasTests) {
+      score -= 20;
+      issues.push('No tests provided');
+    } else {
+      strengths.push(`${this.testCoverage.testCount} test file(s) created`);
+    }
+
+    // Check for files
+    if (this.files.length === 0) {
+      score -= 30;
+      issues.push('No files modified');
+    } else {
+      strengths.push(`${this.files.length} file(s) modified`);
+    }
+
+    // Check for summary
+    if (!this.summary || this.summary.length < 20) {
+      score -= 10;
+      issues.push('Missing or brief summary');
+    }
+
+    // Bonus for comprehensive implementation
+    if (this.files.length > 0 && this.tests.length > 0 && this.summary.length > 50) {
+      score += 10;
+      strengths.push('Comprehensive implementation with tests and documentation');
+    }
+
+    this.implementationQuality = {
+      score: Math.max(0, Math.min(100, score)),
+      issues,
+      strengths,
+    };
+
+    return this.implementationQuality;
+  }
+
+  /**
+   * Check if implementation meets minimum quality
+   */
+  meetsMinimumQuality(requireTests = true) {
+    this.updateTestCoverage();
+    this.assessQuality();
+
+    if (this.blocked) return false;
+    if (this.files.length === 0) return false;
+    if (requireTests && !this.testCoverage.hasTests) return false;
+
+    return this.implementationQuality.score >= 50;
+  }
+
   getArtifacts() {
     return {
       filesCreated: this.files.filter(f => f.action === 'created').map(f => f.path),
       filesModified: this.files.filter(f => f.action === 'modified').map(f => f.path),
       testsCreated: this.tests.map(t => t.path),
       commandsRun: this.commands.length,
+      testCoverage: this.testCoverage,
+      quality: this.implementationQuality,
     };
   }
 }
@@ -116,6 +231,23 @@ export class CoderAgent extends BaseAgent {
     this.codeHistory = [];
     this.maxCodeHistory = 30;
 
+    // Configuration
+    this.requireTests = config.requireTests ?? REQUIRE_TESTS_DEFAULT;
+    this.maxFixAttempts = config.maxFixAttempts || MAX_FIX_ATTEMPTS;
+
+    // Track fix cycles per step
+    this.fixCycles = new Map(); // stepId -> { attempts, issues, fixes }
+
+    // Track steps that need sub-plans
+    this.subPlanRequests = new Map(); // stepId -> { reason, complexity, attempts }
+
+    // Store context for better implementation
+    this.implementationContext = {
+      projectPatterns: [],
+      successfulApproaches: [],
+      failedApproaches: [],
+    };
+
     // Register message handlers
     this.registerHandlers();
   }
@@ -132,21 +264,54 @@ export class CoderAgent extends BaseAgent {
    * Handle code implementation request
    */
   async handleCodeRequest(message) {
-    const { step, context } = message.payload;
+    const { step, context, enforceTests } = message.payload;
 
     this.status = AgentStatus.WORKING;
 
     try {
       const codeOutput = await this.implementStep(step, context);
 
+      // Update test coverage and quality assessment
+      codeOutput.updateTestCoverage();
+      codeOutput.assessQuality();
+
       // Store in history
       this.addToHistory(codeOutput);
+
+      // Check if step needs sub-plan
+      if (codeOutput.requiresSubPlan) {
+        this.trackSubPlanRequest(step, codeOutput.subPlanReason);
+
+        return message.createResponse(MessageType.CODE_RESPONSE, {
+          success: false,
+          output: codeOutput,
+          blocked: true,
+          blockReason: codeOutput.blockReason,
+          requiresSubPlan: true,
+          subPlanReason: codeOutput.subPlanReason,
+        });
+      }
+
+      // Check test requirements
+      const requireTestsForStep = enforceTests ?? this.requireTests;
+      if (requireTestsForStep && !codeOutput.testCoverage.hasTests && !codeOutput.blocked) {
+        // Request tests if missing
+        const testsOutput = await this.requestTestsForImplementation(step, codeOutput);
+        if (testsOutput.tests.length > 0) {
+          // Merge test output
+          codeOutput.tests.push(...testsOutput.tests);
+          codeOutput.updateTestCoverage();
+          codeOutput.assessQuality();
+        }
+      }
 
       return message.createResponse(MessageType.CODE_RESPONSE, {
         success: !codeOutput.blocked,
         output: codeOutput,
         blocked: codeOutput.blocked,
         blockReason: codeOutput.blockReason,
+        quality: codeOutput.implementationQuality,
+        testCoverage: codeOutput.testCoverage,
       });
 
     } catch (error) {
@@ -165,6 +330,73 @@ export class CoderAgent extends BaseAgent {
   }
 
   /**
+   * Track sub-plan request for a step
+   */
+  trackSubPlanRequest(step, reason) {
+    const existing = this.subPlanRequests.get(step.id) || {
+      reason: [],
+      complexity: step.complexity,
+      attempts: 0,
+    };
+
+    existing.attempts++;
+    existing.reason.push(reason);
+    this.subPlanRequests.set(step.id, existing);
+  }
+
+  /**
+   * Request tests for an implementation that's missing them
+   */
+  async requestTestsForImplementation(step, codeOutput) {
+    const prompt = this.buildTestRequestPrompt(step, codeOutput);
+
+    const result = await this.client.sendPrompt(prompt, {
+      model: this.model,
+      timeout: 5 * 60 * 1000,
+    });
+
+    const testOutput = new CodeOutput(step.id);
+    this.parseImplementationResponse(result.response, testOutput);
+
+    return testOutput;
+  }
+
+  /**
+   * Build prompt to request tests for existing implementation
+   */
+  buildTestRequestPrompt(step, codeOutput) {
+    const filesModified = codeOutput.files.map(f => `- \`${f.path}\``).join('\n');
+
+    return `## TESTS REQUIRED
+
+You implemented Step ${step.number}: "${step.description}" but did not include tests.
+
+## FILES MODIFIED
+${filesModified}
+
+## TASK
+Write comprehensive unit tests for this implementation. Include:
+1. Tests for the main functionality
+2. Edge case tests
+3. Error handling tests
+
+## OUTPUT FORMAT
+
+### Tests Created
+- \`path/to/test.ext\` - [test description]
+
+### Test Code
+\`\`\`language
+[Test code]
+\`\`\`
+
+### Status
+COMPLETE
+
+Write the tests now.`;
+  }
+
+  /**
    * Handle code fix request (from Tester feedback)
    */
   async handleCodeFixRequest(message) {
@@ -173,22 +405,69 @@ export class CoderAgent extends BaseAgent {
     this.status = AgentStatus.WORKING;
 
     try {
-      const codeOutput = await this.applyFix(step, fixPlan);
+      // Track fix cycle
+      const fixCycle = this.trackFixCycle(step.id, fixPlan);
+
+      // Check if max attempts reached
+      if (fixCycle.attempts > this.maxFixAttempts) {
+        const errorOutput = new CodeOutput(step.id);
+        errorOutput.fixAttempt = fixCycle.attempts;
+        errorOutput.fixCycleStatus = FixCycleStatus.MAX_ATTEMPTS_REACHED;
+        errorOutput.setBlocked(`Max fix attempts (${this.maxFixAttempts}) reached`);
+
+        // Suggest sub-plan instead
+        errorOutput.requestSubPlan(
+          `Unable to fix after ${this.maxFixAttempts} attempts. Issues: ${fixPlan.issues?.map(i => i.description).join('; ')}`
+        );
+
+        return message.createResponse(MessageType.CODE_RESPONSE, {
+          success: false,
+          output: errorOutput,
+          blocked: true,
+          blockReason: errorOutput.blockReason,
+          fixApplied: false,
+          maxAttemptsReached: true,
+          requiresSubPlan: true,
+          subPlanReason: errorOutput.subPlanReason,
+        });
+      }
+
+      const codeOutput = await this.applyFix(step, fixPlan, fixCycle);
+
+      // Update tracking
+      codeOutput.fixAttempt = fixCycle.attempts;
+      codeOutput.fixCycleStatus = codeOutput.blocked
+        ? FixCycleStatus.IN_PROGRESS
+        : FixCycleStatus.RESOLVED;
+
+      codeOutput.updateTestCoverage();
+      codeOutput.assessQuality();
 
       // Store in history
       this.addToHistory(codeOutput);
+
+      // Record success or failure for learning
+      if (!codeOutput.blocked) {
+        this.recordSuccessfulFix(step, fixPlan, codeOutput);
+      } else {
+        this.recordFailedFix(step, fixPlan, codeOutput);
+      }
 
       return message.createResponse(MessageType.CODE_RESPONSE, {
         success: !codeOutput.blocked,
         output: codeOutput,
         blocked: codeOutput.blocked,
         blockReason: codeOutput.blockReason,
-        fixApplied: true,
+        fixApplied: !codeOutput.blocked,
+        fixAttempt: fixCycle.attempts,
+        remainingAttempts: this.maxFixAttempts - fixCycle.attempts,
+        quality: codeOutput.implementationQuality,
       });
 
     } catch (error) {
       const errorOutput = new CodeOutput(step.id);
       errorOutput.setBlocked(`Fix error: ${error.message}`);
+      errorOutput.fixCycleStatus = FixCycleStatus.IN_PROGRESS;
 
       return message.createResponse(MessageType.CODE_RESPONSE, {
         success: false,
@@ -198,6 +477,65 @@ export class CoderAgent extends BaseAgent {
       });
     } finally {
       this.status = AgentStatus.IDLE;
+    }
+  }
+
+  /**
+   * Track fix cycle for a step
+   */
+  trackFixCycle(stepId, fixPlan) {
+    const existing = this.fixCycles.get(stepId) || {
+      attempts: 0,
+      issues: [],
+      fixes: [],
+      startTime: Date.now(),
+    };
+
+    existing.attempts++;
+    existing.issues.push({
+      attempt: existing.attempts,
+      issues: fixPlan.issues || [],
+      timestamp: Date.now(),
+    });
+
+    this.fixCycles.set(stepId, existing);
+    return existing;
+  }
+
+  /**
+   * Record a successful fix for learning
+   */
+  recordSuccessfulFix(step, fixPlan, codeOutput) {
+    this.implementationContext.successfulApproaches.push({
+      stepId: step.id,
+      issues: fixPlan.issues?.map(i => i.description) || [],
+      approach: codeOutput.summary,
+      timestamp: Date.now(),
+    });
+
+    // Limit stored approaches
+    if (this.implementationContext.successfulApproaches.length > 20) {
+      this.implementationContext.successfulApproaches =
+        this.implementationContext.successfulApproaches.slice(-20);
+    }
+  }
+
+  /**
+   * Record a failed fix for learning
+   */
+  recordFailedFix(step, fixPlan, codeOutput) {
+    this.implementationContext.failedApproaches.push({
+      stepId: step.id,
+      issues: fixPlan.issues?.map(i => i.description) || [],
+      attempt: codeOutput.summary,
+      reason: codeOutput.blockReason,
+      timestamp: Date.now(),
+    });
+
+    // Limit stored approaches
+    if (this.implementationContext.failedApproaches.length > 20) {
+      this.implementationContext.failedApproaches =
+        this.implementationContext.failedApproaches.slice(-20);
     }
   }
 
@@ -230,8 +568,8 @@ export class CoderAgent extends BaseAgent {
   /**
    * Apply a fix based on Tester feedback
    */
-  async applyFix(step, fixPlan) {
-    const prompt = this.buildFixPrompt(step, fixPlan);
+  async applyFix(step, fixPlan, fixCycle = null) {
+    const prompt = this.buildFixPrompt(step, fixPlan, fixCycle);
     const codeOutput = new CodeOutput(step.id);
 
     const result = await this.client.sendPrompt(prompt, {
@@ -357,11 +695,37 @@ Begin implementation now.`;
   /**
    * Build fix prompt based on Tester feedback
    */
-  buildFixPrompt(step, fixPlan) {
+  buildFixPrompt(step, fixPlan, fixCycle = null) {
     const issues = fixPlan.issues || [];
     const issueList = issues.map((issue, i) =>
       `${i + 1}. [${issue.severity}] ${issue.description}${issue.location ? ` (at ${issue.location})` : ''}`
     ).join('\n');
+
+    // Add context from previous fix attempts
+    let previousAttemptsSection = '';
+    if (fixCycle && fixCycle.attempts > 1) {
+      const previousIssues = fixCycle.issues.slice(0, -1); // Exclude current
+      previousAttemptsSection = `
+## PREVIOUS FIX ATTEMPTS (${fixCycle.attempts - 1} attempts made)
+
+⚠️ These approaches did NOT work - try something DIFFERENT:
+${previousIssues.map((attempt, i) =>
+  `Attempt ${i + 1}: Tried to fix: ${attempt.issues.map(iss => iss.description).join(', ')}`
+).join('\n')}
+
+You MUST try a different approach this time.
+`;
+    }
+
+    // Add context from similar successful fixes
+    let successfulPatterns = '';
+    const similarSuccesses = this.implementationContext.successfulApproaches.slice(-3);
+    if (similarSuccesses.length > 0) {
+      successfulPatterns = `
+## SUCCESSFUL PATTERNS (approaches that worked before)
+${similarSuccesses.map(s => `- ${s.approach?.substring(0, 100) || 'Fix applied successfully'}`).join('\n')}
+`;
+    }
 
     return `## FIX REQUIRED
 
@@ -373,7 +737,8 @@ ${issueList}
 
 ## FIX PRIORITY
 ${fixPlan.priority || 'normal'}
-
+${previousAttemptsSection}
+${successfulPatterns}
 ## INSTRUCTIONS
 
 1. **Analyze** each issue carefully
@@ -387,6 +752,7 @@ ${fixPlan.priority || 'normal'}
 - Don't introduce new problems
 - Keep existing functionality working
 - Show the fixed code clearly
+${fixCycle && fixCycle.attempts > 1 ? '- Try a DIFFERENT approach than previous attempts' : ''}
 
 ## OUTPUT FORMAT
 
@@ -538,12 +904,29 @@ Apply the fixes now.`;
    * Get agent statistics
    */
   getStats() {
+    // Calculate fix cycle stats
+    let totalFixAttempts = 0;
+    let resolvedFixes = 0;
+    for (const [stepId, cycle] of this.fixCycles) {
+      totalFixAttempts += cycle.attempts;
+      if (cycle.fixes.some(f => f.resolved)) resolvedFixes++;
+    }
+
     return {
       ...super.getStats(),
       model: this.model,
       sessionActive: !!this.sessionId,
+      requireTests: this.requireTests,
       implementationsCount: this.codeHistory.length,
       blockedCount: this.codeHistory.filter(h => h.blocked).length,
+      fixCyclesTracked: this.fixCycles.size,
+      totalFixAttempts,
+      subPlanRequests: this.subPlanRequests.size,
+      implementationContext: {
+        successfulApproaches: this.implementationContext.successfulApproaches.length,
+        failedApproaches: this.implementationContext.failedApproaches.length,
+        projectPatterns: this.implementationContext.projectPatterns.length,
+      },
       recentImplementations: this.codeHistory.slice(-5).map(h => ({
         stepId: h.stepId,
         files: h.filesCount,
@@ -551,6 +934,59 @@ Apply the fixes now.`;
         blocked: h.blocked,
       })),
     };
+  }
+
+  /**
+   * Reset state for a new goal
+   */
+  resetForNewGoal() {
+    this.sessionId = null;
+    this.fixCycles.clear();
+    this.subPlanRequests.clear();
+    // Keep implementation context for learning across goals
+  }
+
+  /**
+   * Reset all state
+   */
+  resetAll() {
+    this.resetForNewGoal();
+    this.codeHistory = [];
+    this.implementationContext = {
+      projectPatterns: [],
+      successfulApproaches: [],
+      failedApproaches: [],
+    };
+  }
+
+  /**
+   * Get fix cycle status for a step
+   */
+  getFixCycleStatus(stepId) {
+    const cycle = this.fixCycles.get(stepId);
+    if (!cycle) return null;
+
+    return {
+      attempts: cycle.attempts,
+      maxAttempts: this.maxFixAttempts,
+      remainingAttempts: Math.max(0, this.maxFixAttempts - cycle.attempts),
+      canContinue: cycle.attempts < this.maxFixAttempts,
+      issues: cycle.issues,
+    };
+  }
+
+  /**
+   * Check if step requires sub-plan
+   */
+  needsSubPlan(stepId) {
+    return this.subPlanRequests.has(stepId);
+  }
+
+  /**
+   * Get sub-plan request details
+   */
+  getSubPlanRequest(stepId) {
+    return this.subPlanRequests.get(stepId);
   }
 }
 

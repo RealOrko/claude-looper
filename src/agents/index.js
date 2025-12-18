@@ -11,6 +11,8 @@ export {
   AgentStatus,
   PlanDepth,
   VerificationType,
+  WorkflowPhase,
+  FixCycleStatus,
   AgentMessage,
   BaseAgent,
   PlanStep,
@@ -18,6 +20,8 @@ export {
   TestResult,
   VerificationResult,
   OrchestrationState,
+  TimeBudgetManager,
+  WorkflowLoop,
 } from './interfaces.js';
 
 // Message bus for inter-agent communication
@@ -27,10 +31,24 @@ export { MessageBus, Messages } from './message-bus.js';
 export { Orchestrator } from './orchestrator.js';
 
 // Agent implementations
-export { PlannerAgent } from './planner-agent.js';
+export { PlannerAgent, PlanQualityAssessment, DependencyTracker } from './planner-agent.js';
 export { CoderAgent, CodeOutput } from './coder-agent.js';
-export { TesterAgent, TestExecutionResult } from './tester-agent.js';
-export { SupervisorAgent, EscalationLevel } from './supervisor-agent.js';
+export {
+  TesterAgent,
+  TestExecutionResult,
+  DetailedFixPlan,
+  TestCoverageAnalysis,
+  IssueSeverity,
+  IssueCategory,
+} from './tester-agent.js';
+export {
+  SupervisorAgent,
+  EscalationLevel,
+  QualityGateType,
+  QualityThresholds,
+  QualityGateResult,
+  ProgressMonitor,
+} from './supervisor-agent.js';
 
 // Default export
 import { Orchestrator } from './orchestrator.js';
