@@ -299,6 +299,7 @@ async function runInDocker(args) {
   const claudeConfigDir = path.join(home, '.claude');
 
   // Build docker run command
+  const sshDir = path.join(home, '.ssh');
   const dockerArgs = [
     'run',
     '--rm',
@@ -307,6 +308,8 @@ async function runInDocker(args) {
     '-v', `${cwd}:/home/claude/workspace`,
     // Mount ~/.claude for credentials (read-write since Claude Code writes debug logs)
     '-v', `${claudeConfigDir}:/home/claude/.claude`,
+    // Mount ~/.ssh for git SSH authentication (read-only)
+    '-v', `${sshDir}:/home/claude/.ssh:ro`,
     // Set working directory
     '-w', '/home/claude/workspace',
     // Use the claude image
@@ -319,6 +322,7 @@ async function runInDocker(args) {
   log(`${icons.arrow} Running in docker container...`, 'cyan');
   log(`${colors.gray}  Mounting: ${cwd} -> /home/claude/workspace${style.reset}`);
   log(`${colors.gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${style.reset}`);
+  log(`${colors.gray}  Mounting: ${sshDir} -> /home/claude/.ssh (read-only)${style.reset}`);
   log('');
 
   const proc = spawn('docker', dockerArgs, {
