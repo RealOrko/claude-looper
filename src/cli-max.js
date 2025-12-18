@@ -426,17 +426,21 @@ async function listSessions(stateDir, workingDirectory) {
   log(`${'─'.repeat(80)}`);
 
   for (const session of sessions) {
-    const statusIcon = session.status === 'completed' ? colors.green + icons.success :
-                       session.status === 'failed' ? colors.red + icons.error :
+    const hasIncompleteSteps = session.totalSteps > 0 && session.completedSteps < session.totalSteps;
+    const isPrematurelyCompleted = session.status === 'completed' && hasIncompleteSteps;
+
+    const statusIcon = session.status === 'failed' ? colors.red + icons.error :
+                       isPrematurelyCompleted ? colors.yellow + icons.warning :
+                       session.status === 'completed' ? colors.green + icons.success :
                        colors.yellow + icons.warning;
-    const statusText = session.status.toUpperCase();
+    const statusText = isPrematurelyCompleted ? 'INCOMPLETE' : session.status.toUpperCase();
 
     const progress = session.totalSteps > 0
       ? `${session.completedSteps}/${session.totalSteps} steps`
       : 'No plan';
 
     const age = formatAge(Date.now() - session.updatedAt);
-    const canResume = session.status !== 'completed' && session.status !== 'failed';
+    const canResume = session.status !== 'failed' && (session.status !== 'completed' || isPrematurelyCompleted);
 
     log(`${statusIcon} ${style.bold}${session.id}${style.reset}`);
     log(`   ${colors.gray}Goal:${style.reset} ${truncate(session.goal, 60)}`);
@@ -463,13 +467,19 @@ async function selectSession(sessions, persistencePath) {
     return null;
   }
 
-  const resumableSessions = sessions.filter(
-    s => s.status !== 'completed' && s.status !== 'failed'
-  );
+  // A session is resumable if:
+  // 1. It's not completed or failed (active/interrupted), OR
+  // 2. It's marked "completed" but has incomplete steps (premature completion)
+  const resumableSessions = sessions.filter(s => {
+    const isActiveSession = s.status !== 'completed' && s.status !== 'failed';
+    const hasIncompleteSteps = s.totalSteps > 0 && s.completedSteps < s.totalSteps;
+    const isPrematurelyCompleted = s.status === 'completed' && hasIncompleteSteps;
+    return isActiveSession || isPrematurelyCompleted;
+  });
 
   if (resumableSessions.length === 0) {
     log(`${icons.warning} No resumable sessions found.`, 'yellow');
-    log(`Found ${sessions.length} session(s), but all are completed or failed.`, 'dim');
+    log(`Found ${sessions.length} session(s), but all are fully completed or failed.`, 'dim');
     log('Start a new session with: claude-auto "Your goal here"', 'dim');
     return null;
   }
@@ -478,13 +488,18 @@ async function selectSession(sessions, persistencePath) {
   log(`${'─'.repeat(80)}`);
 
   resumableSessions.forEach((session, index) => {
-    const statusIcon = colors.yellow + icons.warning;
+    const hasIncompleteSteps = session.totalSteps > 0 && session.completedSteps < session.totalSteps;
+    const isPrematurelyCompleted = session.status === 'completed' && hasIncompleteSteps;
+
+    const statusIcon = isPrematurelyCompleted
+      ? colors.yellow + icons.warning + ' (incomplete)'
+      : colors.yellow + icons.warning;
     const progress = session.totalSteps > 0
       ? `${session.completedSteps}/${session.totalSteps} steps`
       : 'No plan';
     const age = formatAge(Date.now() - session.updatedAt);
 
-    log(`  ${colors.cyan}${style.bold}[${index + 1}]${style.reset} ${session.id}`);
+    log(`  ${colors.cyan}${style.bold}[${index + 1}]${style.reset} ${session.id} ${statusIcon}${style.reset}`);
     log(`      ${colors.gray}Goal:${style.reset} ${truncate(session.goal, 55)}`);
     log(`      ${colors.gray}Progress:${style.reset} ${progress}  ${colors.gray}Updated:${style.reset} ${age} ago`);
     log('');
@@ -563,8 +578,12 @@ async function handleResume(sessionId, stateDir, workingDirectory) {
     return null;
   }
 
-  if (session.status === 'completed') {
-    log(`${icons.warning} Session already completed: ${sessionId}`, 'yellow');
+  // Check if session can be resumed
+  const hasIncompleteSteps = session.totalSteps > 0 && session.completedSteps < session.totalSteps;
+  const isPrematurelyCompleted = session.status === 'completed' && hasIncompleteSteps;
+
+  if (session.status === 'completed' && !isPrematurelyCompleted) {
+    log(`${icons.warning} Session fully completed: ${sessionId}`, 'yellow');
     log('Start a new session with: claude-auto "Your goal here"', 'dim');
     return null;
   }
@@ -573,6 +592,10 @@ async function handleResume(sessionId, stateDir, workingDirectory) {
     log(`${icons.warning} Session failed: ${sessionId}`, 'yellow');
     log('Start a new session with: claude-auto "Your goal here"', 'dim');
     return null;
+  }
+
+  if (isPrematurelyCompleted) {
+    log(`${icons.info} Session marked completed but has incomplete steps (${session.completedSteps}/${session.totalSteps})`, 'cyan');
   }
 
   const progress = session.totalSteps > 0
