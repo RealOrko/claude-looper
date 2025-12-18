@@ -199,13 +199,16 @@ export class StepDependencyAnalyzer {
    * Check if two steps can run in parallel
    */
   canRunInParallel(stepA, stepB, allSteps) {
+    const depsA = stepA.dependencies || [];
+    const depsB = stepB.dependencies || [];
+
     // Can't parallelize if one depends on the other
-    if (stepA.dependencies.includes(stepB.number)) return false;
-    if (stepB.dependencies.includes(stepA.number)) return false;
+    if (depsA.includes(stepB.number)) return false;
+    if (depsB.includes(stepA.number)) return false;
 
     // Can't parallelize if they share dependencies that haven't been met
-    const sharedDeps = stepA.dependencies.filter(d =>
-      stepB.dependencies.includes(d)
+    const sharedDeps = depsA.filter(d =>
+      depsB.includes(d)
     );
 
     // Check if shared dependencies would cause sequencing issues
@@ -264,8 +267,8 @@ export class StepDependencyAnalyzer {
       if (step.status === 'completed' || step.status === 'failed') return false;
       if (completedStepNumbers.includes(step.number)) return false;
 
-      // All dependencies must be completed
-      return step.dependencies.every(dep => completedStepNumbers.includes(dep));
+      // All dependencies must be completed (default to empty array if not set)
+      return (step.dependencies || []).every(dep => completedStepNumbers.includes(dep));
     });
   }
 
@@ -334,13 +337,14 @@ export class StepDependencyAnalyzer {
       const step = steps.find(s => s.number === stepNum);
       if (!step) return [];
 
-      if (step.dependents.length === 0) {
+      const dependents = step.dependents || [];
+      if (dependents.length === 0) {
         memo.set(stepNum, [step]);
         return [step];
       }
 
       let longest = [];
-      for (const depNum of step.dependents) {
+      for (const depNum of dependents) {
         const path = longestPath(depNum);
         if (path.length > longest.length) {
           longest = path;
@@ -355,7 +359,7 @@ export class StepDependencyAnalyzer {
     // Find the critical path starting from steps with no dependencies
     let criticalPath = [];
     for (const step of steps) {
-      if (step.dependencies.length === 0) {
+      if ((step.dependencies || []).length === 0) {
         const path = longestPath(step.number);
         if (path.length > criticalPath.length) {
           criticalPath = path;
