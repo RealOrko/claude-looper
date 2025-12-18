@@ -58,7 +58,7 @@ export default function Sidebar({ activeTab, onTabChange, state }) {
         </div>
         <div className="stat-item">
           <Clock size={16} className="stat-icon info" />
-          <span className="stat-value">{formatDuration(metrics?.elapsedTime || 0)}</span>
+          <span className="stat-value">{formatDuration(state.timeElapsed || metrics?.elapsedTime || 0)}</span>
           <span className="stat-label">Elapsed</span>
         </div>
       </div>

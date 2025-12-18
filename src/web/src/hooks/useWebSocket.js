@@ -27,10 +27,11 @@ const initialState = {
   },
   errors: [],
   // Track step changes for DAG animations
+  // Using arrays instead of Sets for proper React state serialization and comparison
   stepChanges: {
     lastUpdated: null,
-    changedSteps: new Set(),
-    newSteps: new Set(),
+    changedSteps: [], // Step numbers that changed (array for React compatibility)
+    newSteps: [], // New step numbers added (array for React compatibility)
     statusTransitions: [], // { stepNumber, from, to, timestamp }
   },
   // For backward compatibility with UI components
@@ -48,14 +49,15 @@ const initialState = {
 };
 
 // Helper to detect step changes between old and new state
+// Returns arrays instead of Sets for proper React state serialization
 function detectStepChanges(prevPlan, newPlan) {
-  const changes = {
-    changedSteps: new Set(),
-    newSteps: new Set(),
-    statusTransitions: [],
-  };
+  const changedSteps = [];
+  const newSteps = [];
+  const statusTransitions = [];
 
-  if (!newPlan?.steps) return changes;
+  if (!newPlan?.steps) {
+    return { changedSteps, newSteps, statusTransitions };
+  }
 
   const prevStepsMap = new Map(
     (prevPlan?.steps || []).map(s => [s.number, s])
@@ -66,12 +68,12 @@ function detectStepChanges(prevPlan, newPlan) {
 
     if (!prevStep) {
       // New step added
-      changes.newSteps.add(step.number);
-      changes.changedSteps.add(step.number);
+      newSteps.push(step.number);
+      changedSteps.push(step.number);
     } else if (prevStep.status !== step.status) {
       // Status changed
-      changes.changedSteps.add(step.number);
-      changes.statusTransitions.push({
+      changedSteps.push(step.number);
+      statusTransitions.push({
         stepNumber: step.number,
         from: prevStep.status,
         to: step.status,
@@ -80,7 +82,7 @@ function detectStepChanges(prevPlan, newPlan) {
     }
   }
 
-  return changes;
+  return { changedSteps, newSteps, statusTransitions };
 }
 
 export function useWebSocket() {
@@ -162,8 +164,28 @@ export function useWebSocket() {
         setState(prev => {
           const newState = message.data || initialState;
           const stepChanges = detectStepChanges(prev.plan, newState.plan);
+
+          // Merge metrics from server state with client-side metrics tracking
+          const mergedMetrics = {
+            ...prev.metrics,
+            ...newState.metrics,
+            // Client-side tracked metrics that may not come from server
+            supervisionChecks: prev.metrics?.supervisionChecks ?? 0,
+            interventions: prev.metrics?.interventions ?? 0,
+            // Derive step counts from state if not in metrics
+            stepsCompleted: newState.completedSteps?.length || newState.metrics?.stepsCompleted || 0,
+            stepsFailed: newState.failedSteps?.length || newState.metrics?.stepsFailed || 0,
+            iterations: newState.iteration || newState.metrics?.iterations || 0,
+            elapsedTime: newState.timeElapsed || newState.metrics?.elapsedTime || 0,
+          };
+
           return {
             ...newState,
+            // Preserve client-side only state
+            errors: prev.errors || [],
+            // Merge metrics properly
+            metrics: mergedMetrics,
+            // Add step change tracking
             stepChanges: {
               lastUpdated: Date.now(),
               ...stepChanges,
@@ -177,8 +199,28 @@ export function useWebSocket() {
         setState(prev => {
           const newState = message.data || initialState;
           const stepChanges = detectStepChanges(prev.plan, newState.plan);
+
+          // Merge metrics from server state with client-side metrics tracking
+          const mergedMetrics = {
+            ...prev.metrics,
+            ...newState.metrics,
+            // Client-side tracked metrics that may not come from server
+            supervisionChecks: prev.metrics?.supervisionChecks ?? 0,
+            interventions: prev.metrics?.interventions ?? 0,
+            // Derive step counts from state if not in metrics
+            stepsCompleted: newState.completedSteps?.length || newState.metrics?.stepsCompleted || 0,
+            stepsFailed: newState.failedSteps?.length || newState.metrics?.stepsFailed || 0,
+            iterations: newState.iteration || newState.metrics?.iterations || 0,
+            elapsedTime: newState.timeElapsed || newState.metrics?.elapsedTime || 0,
+          };
+
           return {
             ...newState,
+            // Preserve client-side only state
+            errors: prev.errors || [],
+            // Merge metrics properly
+            metrics: mergedMetrics,
+            // Add step change tracking
             stepChanges: {
               lastUpdated: Date.now(),
               ...stepChanges,
@@ -210,19 +252,94 @@ export function useWebSocket() {
         break;
 
       case 'progress':
-        // Real-time progress updates with step change tracking
+        // Progress events contain raw event data (e.g., { type: 'step_complete', step: {...} })
+        // The server also sends processed state via 'stateUpdate' messages, which is the
+        // authoritative source for UI state. We only extract specific useful fields from
+        // progress events to add to logs and avoid overwriting state with raw event fields.
         setState(prev => {
-          const newData = message.data || {};
-          const stepChanges = newData.plan
-            ? detectStepChanges(prev.plan, newData.plan)
-            : prev.stepChanges;
+          const eventData = message.data || {};
+          const eventType = eventData.type;
+
+          // Create a log entry for progress events
+          const logEntry = {
+            id: Date.now() + Math.random(),
+            timestamp: message.timestamp,
+            level: eventType?.includes('failed') || eventType?.includes('error') ? 'error' :
+                   eventType?.includes('complete') || eventType?.includes('passed') ? 'success' :
+                   eventType?.includes('warning') || eventType?.includes('blocked') ? 'warning' : 'info',
+            message: eventData.message || eventType?.replace(/_/g, ' ') || 'progress update',
+          };
+
+          // Only update specific fields that are state-compatible (not raw event structure)
+          // The full state will come from 'stateUpdate' messages
+          const updates = {};
+
+          // Extract iteration if present
+          if (eventData.iteration !== undefined) {
+            updates.iteration = eventData.iteration;
+            // Also update metrics.iterations for consistency
+            updates.metrics = {
+              ...prev.metrics,
+              iterations: eventData.iteration,
+            };
+          }
+
+          // Extract progress percentage from planProgress or directly
+          if (eventData.planProgress?.percentComplete !== undefined) {
+            updates.progress = eventData.planProgress.percentComplete;
+          } else if (eventData.progress?.overallProgress !== undefined) {
+            updates.progress = eventData.progress.overallProgress;
+          } else if (eventData.progress !== undefined && typeof eventData.progress === 'number') {
+            updates.progress = eventData.progress;
+          }
+
+          // Extract current step from planProgress
+          if (eventData.planProgress?.current !== undefined) {
+            updates.currentStep = eventData.planProgress.current;
+          }
+
+          // Extract time info from nested time object or directly
+          // The server sends time info in eventData.time for iteration_complete events
+          if (eventData.time?.elapsedMs !== undefined) {
+            updates.timeElapsed = eventData.time.elapsedMs;
+            if (updates.metrics) {
+              updates.metrics.elapsedTime = eventData.time.elapsedMs;
+            } else {
+              updates.metrics = {
+                ...prev.metrics,
+                elapsedTime: eventData.time.elapsedMs,
+              };
+            }
+          } else if (eventData.elapsed !== undefined) {
+            updates.timeElapsed = eventData.elapsed;
+          }
+
+          if (eventData.time?.remaining !== undefined) {
+            updates.timeRemaining = eventData.time.remaining;
+          } else if (eventData.remaining !== undefined) {
+            updates.timeRemaining = eventData.remaining;
+          }
+
+          // Extract session ID
+          if (eventData.sessionId !== undefined) {
+            updates.session = eventData.sessionId;
+          }
+
+          // Handle status changes from specific event types
+          if (eventType === 'planning' || eventType === 'plan_created') {
+            updates.status = eventType === 'planning' ? 'planning' : 'executing';
+          } else if (eventType === 'verification_started' || eventType === 'step_verification_started') {
+            updates.status = 'verifying';
+          } else if (eventType === 'final_verification_passed') {
+            updates.status = 'completed';
+          } else if (eventType === 'final_verification_failed') {
+            updates.status = 'failed';
+          }
 
           return {
             ...prev,
-            ...newData,
-            stepChanges: newData.plan
-              ? { lastUpdated: Date.now(), ...stepChanges }
-              : prev.stepChanges,
+            ...updates,
+            logs: [...prev.logs.slice(-999), logEntry],
           };
         });
         break;

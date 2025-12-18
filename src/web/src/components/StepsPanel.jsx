@@ -70,7 +70,8 @@ export default function StepsPanel({ state, logs = [], retryHistory = [] }) {
   // Track status changes for animations - use WebSocket stepChanges if available
   useEffect(() => {
     // If we have stepChanges from WebSocket, use those
-    if (stepChanges?.changedSteps?.size > 0) {
+    // Note: changedSteps is now an array (not a Set) for React state serialization
+    if (stepChanges?.changedSteps?.length > 0) {
       setRecentlyChanged(new Set(stepChanges.changedSteps));
       setStatusTransitions(prev => [
         ...prev.slice(-20), // Keep last 20 transitions

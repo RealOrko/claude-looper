@@ -296,6 +296,10 @@ export class InkDashboard {
     this.logs = [];
     this.instance = null;
     this.rerender = null;
+    // Debounce/batch update mechanism to prevent UI from stopping
+    this._updatePending = false;
+    this._updateTimer = null;
+    this._stateVersion = 0; // Track state version for change detection
   }
 
   init(data) {
@@ -304,6 +308,7 @@ export class InkDashboard {
     this.state.timeLimit = data.timeLimit;
     this.state.startTime = Date.now();
     this.state.status = 'initialized';
+    this._stateVersion++;
 
     // Start Ink rendering
     const app = render(
@@ -311,13 +316,82 @@ export class InkDashboard {
     );
     this.instance = app;
     this.rerender = () => {
-      app.rerender(e(Dashboard, { state: {...this.state}, logs: [...this.logs] }));
+      // Create deep copies of state to ensure React detects changes
+      // This is critical for nested objects like plan.steps
+      const stateCopy = this._deepCopyState();
+      const logsCopy = this.logs.map(log => ({...log}));
+      app.rerender(e(Dashboard, { state: stateCopy, logs: logsCopy }));
     };
   }
 
+  /**
+   * Deep copy state to ensure React detects all changes
+   * This is necessary because we mutate nested objects like plan.steps
+   */
+  _deepCopyState() {
+    const state = {...this.state};
+    // Deep copy plan if it exists
+    if (state.plan) {
+      state.plan = {
+        ...state.plan,
+        steps: state.plan.steps ? state.plan.steps.map(step => ({...step})) : [],
+      };
+    }
+    return state;
+  }
+
   update() {
-    if (this.rerender) {
+    if (!this.rerender) return;
+
+    // Increment state version to track changes
+    this._stateVersion++;
+
+    // Use debounced updates to prevent overwhelming React's render cycle
+    // This is critical to prevent the UI from stopping updates
+    if (this._updatePending) {
+      // Update already scheduled, it will pick up the latest state
+      return;
+    }
+
+    this._updatePending = true;
+
+    // Use setImmediate/setTimeout to batch rapid updates
+    // This allows multiple state changes to be batched into one render
+    if (this._updateTimer) {
+      clearTimeout(this._updateTimer);
+    }
+
+    this._updateTimer = setTimeout(() => {
+      this._updatePending = false;
+      this._updateTimer = null;
+      try {
+        this.rerender();
+      } catch (err) {
+        // Don't let render errors stop future updates
+        console.error('Ink dashboard render error:', err.message);
+      }
+    }, 16); // ~60fps max update rate
+  }
+
+  /**
+   * Force an immediate update (bypass debouncing)
+   * Use sparingly for critical state changes
+   */
+  forceUpdate() {
+    if (!this.rerender) return;
+
+    this._stateVersion++;
+
+    if (this._updateTimer) {
+      clearTimeout(this._updateTimer);
+      this._updateTimer = null;
+    }
+    this._updatePending = false;
+
+    try {
       this.rerender();
+    } catch (err) {
+      console.error('Ink dashboard render error:', err.message);
     }
   }
 
@@ -334,7 +408,20 @@ export class InkDashboard {
   }
 
   updateProgress(data) {
-    if (data.type === 'started') {
+    try {
+      this._handleProgressEvent(data);
+    } catch (err) {
+      // Don't let handler errors crash the runner
+      console.error('Dashboard updateProgress error:', err.message);
+    }
+    this.update();
+  }
+
+  /**
+   * Internal progress event handler - separated for cleaner error handling
+   */
+  _handleProgressEvent(data) {
+    if (data?.type === 'started') {
       this.state.status = 'running';
       this.state.startTime = Date.now();
       this.addLog('info', 'Starting autonomous execution...');
@@ -471,61 +558,84 @@ export class InkDashboard {
       this.state.status = 'error';
       this.addLog('error', `Final verification FAILED: ${data.reason?.substring(0, 60) || 'see report'}`);
     }
-    this.update();
+    // Note: this.update() is called by updateProgress() wrapper after this method returns
   }
 
   updateSupervision(data) {
-    const assessment = data.assessment;
-    if (!assessment) return;
+    try {
+      const assessment = data?.assessment;
+      if (!assessment) return;
 
-    if (assessment.score !== undefined) {
-      this.state.score = assessment.score;
-    }
-    this.state.consecutiveIssues = data.consecutiveIssues || 0;
+      if (assessment.score !== undefined) {
+        this.state.score = assessment.score;
+      }
+      this.state.consecutiveIssues = data.consecutiveIssues || 0;
 
-    if (assessment.action !== 'CONTINUE') {
-      this.addLog('supervision', `${assessment.action}: ${assessment.reason || 'Intervention required'}`);
+      if (assessment.action !== 'CONTINUE') {
+        this.addLog('supervision', `${assessment.action}: ${assessment.reason || 'Intervention required'}`);
+      }
+      this.update();
+    } catch (err) {
+      // Don't let handler errors crash the runner
+      console.error('Dashboard updateSupervision error:', err.message);
     }
-    this.update();
   }
 
   showEscalation(data) {
-    const type = data.type === 'abort' ? 'error' : 'warning';
-    this.addLog(type, `ESCALATION: ${data.message || data.type}`);
-    this.update();
+    try {
+      const type = data?.type === 'abort' ? 'error' : 'warning';
+      this.addLog(type, `ESCALATION: ${data?.message || data?.type || 'unknown'}`);
+      this.update();
+    } catch (err) {
+      console.error('Dashboard showEscalation error:', err.message);
+    }
   }
 
   showVerification(data) {
-    if (data.passed) {
-      this.addLog('success', 'Completion verified');
-    } else {
-      this.addLog('warning', 'Completion rejected - continuing work');
+    try {
+      if (data?.passed) {
+        this.addLog('success', 'Completion verified');
+      } else {
+        this.addLog('warning', 'Completion rejected - continuing work');
+      }
+      this.update();
+    } catch (err) {
+      console.error('Dashboard showVerification error:', err.message);
     }
-    this.update();
   }
 
   showMessage(data) {
-    if (this.verbose && data.content) {
-      const preview = data.content.substring(0, 100).replace(/\n/g, ' ');
-      this.addLog('info', `Claude: ${preview}...`);
+    try {
+      if (this.verbose && data?.content) {
+        const preview = data.content.substring(0, 100).replace(/\n/g, ' ');
+        this.addLog('info', `Claude: ${preview}...`);
+      }
+      this.update();
+    } catch (err) {
+      console.error('Dashboard showMessage error:', err.message);
     }
-    this.update();
   }
 
   showError(data) {
-    this.addLog('error', data.error);
-    this.update();
+    try {
+      this.addLog('error', data?.error || 'Unknown error');
+      this.update();
+    } catch (err) {
+      console.error('Dashboard showError error:', err.message);
+    }
   }
 
   showReport(report) {
+    // Always cleanup the Ink dashboard first
     this.cleanup();
 
-    console.log('\n');
-    console.log('═'.repeat(60));
-    console.log(`  Status: ${report.status?.toUpperCase()}`);
-    console.log(`  Progress: ${report.goal?.progress || 0}%`);
-    console.log(`  Iterations: ${report.session?.iterations || 0}`);
-    console.log(`  Time: ${report.time?.elapsed || 'N/A'}`);
+    try {
+      console.log('\n');
+      console.log('═'.repeat(60));
+      console.log(`  Status: ${report?.status?.toUpperCase() || 'UNKNOWN'}`);
+      console.log(`  Progress: ${report?.goal?.progress || 0}%`);
+      console.log(`  Iterations: ${report?.session?.iterations || 0}`);
+      console.log(`  Time: ${report?.time?.elapsed || 'N/A'}`);
 
     // Show plan summary if available
     if (report.plan) {
@@ -571,15 +681,31 @@ export class InkDashboard {
       console.log(`    ${overallIcon} ${overallColor}Overall: ${fv.overallPassed ? 'PASSED' : 'FAILED'}\x1b[0m`);
     }
 
-    if (report.abortReason) {
+    if (report?.abortReason) {
       console.log('─'.repeat(60));
       console.log(`  Abort Reason: ${report.abortReason}`);
     }
     console.log('═'.repeat(60));
     console.log('\n');
+    } catch (err) {
+      console.error('Dashboard showReport error:', err.message);
+    }
   }
 
   cleanup() {
+    // Clear any pending update timer to prevent updates during/after cleanup
+    if (this._updateTimer) {
+      clearTimeout(this._updateTimer);
+      this._updateTimer = null;
+    }
+    this._updatePending = false;
+
+    // CRITICAL: Null out rerender BEFORE unmounting to prevent any concurrent
+    // updates from trying to use a stale reference to the unmounted app.
+    // This fixes the issue where the UI stops updating because update()
+    // was trying to call rerender() on an unmounted instance.
+    this.rerender = null;
+
     if (this.instance) {
       this.instance.unmount();
       this.instance = null;

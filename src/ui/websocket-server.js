@@ -49,6 +49,15 @@ export class AgentWebSocketServer extends EventEmitter {
       supervisionEvents: 0,
       clientConnections: 0,
     };
+
+    // Debounce state broadcasts to prevent overwhelming clients
+    this._broadcastPending = false;
+    this._broadcastTimer = null;
+    this._stateVersion = 0;
+
+    // Time update interval for live elapsed time in web UI
+    this._timeUpdateInterval = null;
+    this._executionStartTime = null;
   }
 
   _createInitialState() {
@@ -230,12 +239,37 @@ export class AgentWebSocketServer extends EventEmitter {
     }
   }
 
+  /**
+   * Send a message to a single client with backpressure handling
+   * Returns true if message was sent, false if client was skipped due to backpressure
+   */
   _send(ws, type, data) {
-    if (ws.readyState === ws.OPEN) {
+    if (ws.readyState !== ws.OPEN) {
+      return false;
+    }
+
+    // Check for backpressure - bufferedAmount indicates how much data is queued
+    // Skip clients with large buffers to prevent event loop blocking
+    const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer before skipping
+    if (ws.bufferedAmount > MAX_BUFFER_SIZE) {
+      // Track skipped messages for monitoring
+      ws._skippedMessages = (ws._skippedMessages || 0) + 1;
+      return false;
+    }
+
+    try {
       ws.send(JSON.stringify({ type, data, timestamp: Date.now() }));
+      return true;
+    } catch (err) {
+      console.error('WebSocket send error:', err.message);
+      return false;
     }
   }
 
+  /**
+   * Broadcast a message to all clients with backpressure handling
+   * Slow clients will be skipped to prevent blocking
+   */
   broadcast(type, data) {
     const message = { type, data, timestamp: Date.now() };
     const messageStr = JSON.stringify(message);
@@ -246,15 +280,38 @@ export class AgentWebSocketServer extends EventEmitter {
     // Update internal state based on event type
     this._updateState(type, data);
 
-    // Broadcast to all connected clients
+    // Broadcast to all connected clients with backpressure handling
+    const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer before skipping
+    let sentCount = 0;
+    let skippedCount = 0;
+
     for (const client of this.clients) {
-      if (client.readyState === client.OPEN) {
+      if (client.readyState !== client.OPEN) {
+        continue;
+      }
+
+      // Check for backpressure
+      if (client.bufferedAmount > MAX_BUFFER_SIZE) {
+        client._skippedMessages = (client._skippedMessages || 0) + 1;
+        skippedCount++;
+        continue;
+      }
+
+      try {
         client.send(messageStr);
+        sentCount++;
+      } catch (err) {
+        console.error('WebSocket broadcast error:', err.message);
       }
     }
 
+    // Log if clients are being skipped (indicates slow clients)
+    if (skippedCount > 0) {
+      console.warn(`Broadcast skipped ${skippedCount} slow clients (type: ${type})`);
+    }
+
     // Emit for local listeners
-    this.emit('broadcast', { type, data });
+    this.emit('broadcast', { type, data, sentCount, skippedCount });
   }
 
   _addToHistory(type, data) {
@@ -310,6 +367,7 @@ export class AgentWebSocketServer extends EventEmitter {
       case 'complete':
         this.state.status = data.status === 'completed' ? 'completed' : 'failed';
         this.state.finalReport = data;
+        this._stopTimeUpdates(); // Stop time updates when completed
         this._addLog('complete', `Status: ${data.status}`);
         break;
     }
@@ -335,8 +393,22 @@ export class AgentWebSocketServer extends EventEmitter {
         this._addLog('info', 'Agent initialized');
         break;
 
+      case 'started':
+        // Execution started - start time tracking
+        this._executionStartTime = Date.now();
+        this.state.status = 'executing';
+        this.state.timeElapsed = 0;
+        this._startTimeUpdates();
+        this._addLog('info', 'Execution started');
+        break;
+
       case 'planning':
         this.state.status = 'planning';
+        // Start time tracking if not already started
+        if (!this._executionStartTime) {
+          this._executionStartTime = Date.now();
+          this._startTimeUpdates();
+        }
         this._addLog('info', data.message || 'Creating execution plan...');
         break;
 
@@ -352,7 +424,8 @@ export class AgentWebSocketServer extends EventEmitter {
         break;
 
       case 'step_complete':
-        this.state.completedSteps.push(data.step);
+        // Create new array to prevent race conditions with broadcasts
+        this.state.completedSteps = [...this.state.completedSteps, data.step];
         this.state.currentStep = null;
         this.metrics.stepsCompleted++;
         this._updatePlanStepStatus(data.step?.number, 'completed');
@@ -361,7 +434,8 @@ export class AgentWebSocketServer extends EventEmitter {
 
       case 'step_failed':
       case 'step_rejected':
-        this.state.failedSteps.push({ ...data.step, reason: data.reason });
+        // Create new array to prevent race conditions with broadcasts
+        this.state.failedSteps = [...this.state.failedSteps, { ...data.step, reason: data.reason }];
         this.state.currentStep = null;
         this.metrics.stepsFailed++;
         this._updatePlanStepStatus(data.step?.number, 'failed', data.reason);
@@ -447,6 +521,7 @@ export class AgentWebSocketServer extends EventEmitter {
 
       case 'retry_loop_completed':
         this.state.status = data.overallSuccess ? 'completed' : 'failed';
+        this._stopTimeUpdates(); // Stop time updates when completed
         this._addLog(data.overallSuccess ? 'success' : 'warning',
           `Retry loop complete: ${data.finalConfidence} confidence after ${data.totalAttempts} attempts`);
         break;
@@ -484,11 +559,21 @@ export class AgentWebSocketServer extends EventEmitter {
 
   _updatePlanStepStatus(stepNumber, status, reason) {
     if (this.state.plan?.steps) {
-      const step = this.state.plan.steps.find(s => s.number === stepNumber);
-      if (step) {
-        step.status = status;
-        if (reason) step.failReason = reason;
-      }
+      // Create a new steps array to ensure React detects the change
+      // This prevents race conditions where the broadcast sees stale data
+      this.state.plan = {
+        ...this.state.plan,
+        steps: this.state.plan.steps.map(step => {
+          if (step.number === stepNumber) {
+            return {
+              ...step,
+              status,
+              ...(reason ? { failReason: reason } : {}),
+            };
+          }
+          return step;
+        }),
+      };
     }
   }
 
@@ -499,26 +584,153 @@ export class AgentWebSocketServer extends EventEmitter {
       message,
       timestamp: Date.now(),
     };
-    this.state.logs.push(log);
+    // Create new array to prevent race conditions with broadcasts
+    // Also keep logs manageable by limiting to last 500
+    const newLogs = [...this.state.logs, log];
+    this.state.logs = newLogs.length > 500 ? newLogs.slice(-500) : newLogs;
+  }
 
-    // Keep logs manageable
-    if (this.state.logs.length > 500) {
-      this.state.logs = this.state.logs.slice(-500);
-    }
+  /**
+   * Create a deep snapshot of the current state for atomic broadcast
+   * This ensures all clients receive a consistent state even if updates
+   * happen during the broadcast iteration
+   */
+  _createStateSnapshot() {
+    return {
+      ...this.state,
+      // Deep copy nested objects that change frequently
+      plan: this.state.plan ? {
+        ...this.state.plan,
+        steps: this.state.plan.steps ? this.state.plan.steps.map(s => ({ ...s })) : [],
+      } : null,
+      completedSteps: [...this.state.completedSteps],
+      failedSteps: this.state.failedSteps.map(s => ({ ...s })),
+      subGoals: [...this.state.subGoals],
+      logs: this.state.logs.map(l => ({ ...l })),
+      lastMessage: this.state.lastMessage ? { ...this.state.lastMessage } : null,
+      lastError: this.state.lastError ? { ...this.state.lastError } : null,
+      supervision: this.state.supervision ? { ...this.state.supervision } : null,
+      verification: this.state.verification ? { ...this.state.verification } : null,
+      retryMode: {
+        ...this.state.retryMode,
+        attempts: this.state.retryMode.attempts.map(a => ({ ...a })),
+      },
+    };
   }
 
   _broadcastStateUpdate() {
-    const stateMessage = JSON.stringify({
-      type: 'stateUpdate',
-      data: this.state,
-      timestamp: Date.now()
-    });
+    // Increment state version for change tracking
+    this._stateVersion++;
 
-    for (const client of this.clients) {
-      if (client.readyState === client.OPEN) {
-        client.send(stateMessage);
-      }
+    // Use debounced broadcasts to prevent overwhelming clients
+    if (this._broadcastPending) {
+      // Update already scheduled, it will pick up the latest state
+      return;
     }
+
+    this._broadcastPending = true;
+
+    // Clear any existing timer
+    if (this._broadcastTimer) {
+      clearTimeout(this._broadcastTimer);
+    }
+
+    // Batch rapid updates into a single broadcast
+    this._broadcastTimer = setTimeout(() => {
+      this._broadcastPending = false;
+      this._broadcastTimer = null;
+
+      // Update timeElapsed before broadcasting if execution is running
+      if (this._executionStartTime && ['executing', 'planning', 'verifying'].includes(this.state.status)) {
+        this.state.timeElapsed = Date.now() - this._executionStartTime;
+      }
+
+      // Create a snapshot of state for atomic broadcast
+      // This ensures all clients receive the same consistent state
+      const stateSnapshot = this._createStateSnapshot();
+
+      const stateMessage = JSON.stringify({
+        type: 'stateUpdate',
+        data: stateSnapshot,
+        timestamp: Date.now(),
+        version: this._stateVersion,
+      });
+
+      // Broadcast with backpressure handling
+      const MAX_BUFFER_SIZE = 1024 * 1024; // 1MB max buffer before skipping
+      let skippedCount = 0;
+
+      for (const client of this.clients) {
+        if (client.readyState !== client.OPEN) {
+          continue;
+        }
+
+        // Check for backpressure - skip clients with large buffers
+        if (client.bufferedAmount > MAX_BUFFER_SIZE) {
+          client._skippedMessages = (client._skippedMessages || 0) + 1;
+          skippedCount++;
+          continue;
+        }
+
+        try {
+          client.send(stateMessage);
+        } catch (err) {
+          // Don't let send errors stop other broadcasts
+          console.error('WebSocket send error:', err.message);
+        }
+      }
+
+      // Log if clients are being skipped (indicates slow clients)
+      if (skippedCount > 0) {
+        console.warn(`State broadcast skipped ${skippedCount} slow clients`);
+      }
+    }, 50); // 50ms debounce - allows batching without feeling sluggish
+  }
+
+  /**
+   * Start periodic time updates to keep elapsed time accurate in web UI
+   */
+  _startTimeUpdates() {
+    if (this._timeUpdateInterval) return;
+
+    this._timeUpdateInterval = setInterval(() => {
+      if (this._executionStartTime && ['executing', 'planning', 'verifying'].includes(this.state.status)) {
+        this.state.timeElapsed = Date.now() - this._executionStartTime;
+
+        // Calculate remaining time if timeLimit is set
+        if (this.state.timeLimit) {
+          const limitMs = this._parseTimeLimit(this.state.timeLimit);
+          this.state.timeRemaining = Math.max(0, limitMs - this.state.timeElapsed);
+        }
+
+        // Broadcast updated time (will be debounced)
+        this._broadcastStateUpdate();
+      }
+    }, 1000); // Update every second
+  }
+
+  /**
+   * Stop periodic time updates
+   */
+  _stopTimeUpdates() {
+    if (this._timeUpdateInterval) {
+      clearInterval(this._timeUpdateInterval);
+      this._timeUpdateInterval = null;
+    }
+  }
+
+  /**
+   * Parse time limit string to milliseconds
+   */
+  _parseTimeLimit(str) {
+    if (!str) return 0;
+    const match = str.match(/^(\d+)(m|h|d)?$/);
+    if (!match) return 2 * 60 * 60 * 1000; // default 2h
+
+    const value = parseInt(match[1], 10);
+    const unit = match[2] || 'h';
+    const multipliers = { m: 60 * 1000, h: 60 * 60 * 1000, d: 24 * 60 * 60 * 1000 };
+    return value * multipliers[unit];
   }
 
   _getMetrics() {
@@ -539,41 +751,112 @@ export class AgentWebSocketServer extends EventEmitter {
   }
 
   // Create handler functions that integrate with the existing runner pattern
+  // Each handler is wrapped in try-catch to ensure:
+  // 1. Dashboard handler errors don't prevent WebSocket broadcasts
+  // 2. WebSocket errors don't prevent dashboard updates
   createHandlers(existingHandlers = {}) {
     return {
       onProgress: (data) => {
-        existingHandlers.onProgress?.(data);
-        this.broadcast('progress', data);
+        // Call existing handler first (dashboard), catch any errors
+        try {
+          existingHandlers.onProgress?.(data);
+        } catch (err) {
+          console.error('Handler onProgress error:', err.message);
+        }
+        // Always broadcast to WebSocket clients
+        try {
+          this.broadcast('progress', data);
+        } catch (err) {
+          console.error('Broadcast progress error:', err.message);
+        }
       },
       onMessage: (data) => {
-        existingHandlers.onMessage?.(data);
-        this.broadcast('message', data);
+        try {
+          existingHandlers.onMessage?.(data);
+        } catch (err) {
+          console.error('Handler onMessage error:', err.message);
+        }
+        try {
+          this.broadcast('message', data);
+        } catch (err) {
+          console.error('Broadcast message error:', err.message);
+        }
       },
       onError: (data) => {
-        existingHandlers.onError?.(data);
-        this.broadcast('error', data);
+        try {
+          existingHandlers.onError?.(data);
+        } catch (err) {
+          console.error('Handler onError error:', err.message);
+        }
+        try {
+          this.broadcast('error', data);
+        } catch (err) {
+          console.error('Broadcast error error:', err.message);
+        }
       },
       onSupervision: (data) => {
-        existingHandlers.onSupervision?.(data);
-        this.broadcast('supervision', data);
+        try {
+          existingHandlers.onSupervision?.(data);
+        } catch (err) {
+          console.error('Handler onSupervision error:', err.message);
+        }
+        try {
+          this.broadcast('supervision', data);
+        } catch (err) {
+          console.error('Broadcast supervision error:', err.message);
+        }
       },
       onEscalation: (data) => {
-        existingHandlers.onEscalation?.(data);
-        this.broadcast('escalation', data);
+        try {
+          existingHandlers.onEscalation?.(data);
+        } catch (err) {
+          console.error('Handler onEscalation error:', err.message);
+        }
+        try {
+          this.broadcast('escalation', data);
+        } catch (err) {
+          console.error('Broadcast escalation error:', err.message);
+        }
       },
       onVerification: (data) => {
-        existingHandlers.onVerification?.(data);
-        this.broadcast('verification', data);
+        try {
+          existingHandlers.onVerification?.(data);
+        } catch (err) {
+          console.error('Handler onVerification error:', err.message);
+        }
+        try {
+          this.broadcast('verification', data);
+        } catch (err) {
+          console.error('Broadcast verification error:', err.message);
+        }
       },
       onComplete: (report) => {
-        existingHandlers.onComplete?.(report);
-        this.broadcast('complete', report);
+        try {
+          existingHandlers.onComplete?.(report);
+        } catch (err) {
+          console.error('Handler onComplete error:', err.message);
+        }
+        try {
+          this.broadcast('complete', report);
+        } catch (err) {
+          console.error('Broadcast complete error:', err.message);
+        }
       },
     };
   }
 
   async stop() {
     if (!this.isRunning) return;
+
+    // Stop time updates
+    this._stopTimeUpdates();
+
+    // Clear broadcast timer
+    if (this._broadcastTimer) {
+      clearTimeout(this._broadcastTimer);
+      this._broadcastTimer = null;
+    }
+    this._broadcastPending = false;
 
     // Close all WebSocket connections
     for (const client of this.clients) {
@@ -590,6 +873,7 @@ export class AgentWebSocketServer extends EventEmitter {
     await new Promise((resolve) => this.server.close(resolve));
 
     this.isRunning = false;
+    this._executionStartTime = null;
     this.emit('stopped');
     console.log('WebSocket server stopped');
   }
