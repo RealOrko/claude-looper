@@ -433,6 +433,15 @@ export class InkDashboard {
       this.state.currentStep = 1;
       const stepCount = data.plan?.steps?.length || 0;
       this.addLog('success', `Plan created with ${stepCount} steps`);
+    } else if (data.type === 'resuming') {
+      this.addLog('info', data.message || 'Resuming session...');
+    } else if (data.type === 'plan_restored') {
+      this.state.plan = data.plan;
+      this.state.currentStep = data.currentStep || 1;
+      const completed = data.completedSteps?.length || 0;
+      const total = data.plan?.steps?.length || 0;
+      this.state.progress = total > 0 ? Math.round((completed / total) * 100) : 0;
+      this.addLog('success', `Resumed: ${completed}/${total} steps completed, continuing from step ${this.state.currentStep}`);
     } else if (data.type === 'step_verification_pending') {
       if (data.step) {
         this.addLog('info', `Verifying step ${data.step.number}...`);
