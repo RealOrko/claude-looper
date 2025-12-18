@@ -62,17 +62,23 @@ export class CompletionVerifier {
       runTests: config.runTests ?? true,
       testCommands: config.testCommands || ['npm test', 'pytest', 'go test ./...'],
       buildCommands: config.buildCommands || ['npm run build', 'make'],
+      // Minimum plan progress required to accept completion claims (0-100)
+      minPlanProgress: config.minPlanProgress ?? 70,
     };
   }
 
   /**
    * Main verification entry point
    * Returns verification result with pass/fail for each layer
+   * @param {string} completionClaim - The completion claim from Claude
+   * @param {string} workingDirectory - The working directory
+   * @param {object} planProgress - Optional plan progress info { completed, total, percentComplete }
    */
-  async verify(completionClaim, workingDirectory) {
+  async verify(completionClaim, workingDirectory, planProgress = null) {
     const result = {
       passed: false,
       layers: {
+        planProgress: null,
         challenge: null,
         artifacts: null,
         validation: null,
@@ -83,6 +89,27 @@ export class CompletionVerifier {
     };
 
     const verifyConfig = this.getVerificationConfig();
+
+    // Layer 0: Plan Progress Check - reject if plan is not sufficiently complete
+    if (planProgress) {
+      const minProgress = verifyConfig.minPlanProgress;
+      result.layers.planProgress = {
+        passed: planProgress.percentComplete >= minProgress,
+        completed: planProgress.completed,
+        total: planProgress.total,
+        percentComplete: planProgress.percentComplete,
+        minRequired: minProgress,
+      };
+
+      if (!result.layers.planProgress.passed) {
+        result.failures.push(
+          `Plan only ${planProgress.percentComplete}% complete (${planProgress.completed}/${planProgress.total} steps). ` +
+          `Minimum ${minProgress}% required to accept completion claims.`
+        );
+        this.addToHistory(result);
+        return result;
+      }
+    }
 
     // Layer 1: LLM Challenge - ask for concrete evidence
     result.layers.challenge = await this.challengeCompletion(completionClaim);
@@ -606,6 +633,18 @@ ${failures.map((f, i) => `${i + 1}. ${f}`).join('\n')}
 `;
 
     // Add specific guidance based on what failed
+    if (verificationResult.layers.planProgress && !verificationResult.layers.planProgress.passed) {
+      const progress = verificationResult.layers.planProgress;
+      prompt += `
+**Issue: Incomplete Plan**
+You have only completed ${progress.completed} of ${progress.total} planned steps (${progress.percentComplete}%).
+At least ${progress.minRequired}% of steps must be completed before claiming task completion.
+
+**Remaining steps to complete:**
+Continue working through the planned steps. Do not claim completion until you have addressed the remaining work.
+`;
+    }
+
     if (verificationResult.layers.challenge && !verificationResult.layers.challenge.passed) {
       prompt += `
 **Issue: Insufficient Evidence**

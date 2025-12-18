@@ -155,6 +155,14 @@ export class StatePersistence {
    */
   async listSessions() {
     try {
+      // Check if persistence directory exists
+      try {
+        await fs.access(this.persistencePath);
+      } catch {
+        // Directory doesn't exist - no sessions
+        return [];
+      }
+
       const files = await fs.readdir(this.persistencePath);
       const sessions = [];
 
@@ -182,15 +190,23 @@ export class StatePersistence {
 
       return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
     } catch (error) {
+      console.error(`Failed to list sessions from ${this.persistencePath}: ${error.message}`);
       return [];
     }
   }
 
   /**
    * Create a checkpoint of current state
+   * @param {string} label - Optional label for the checkpoint
+   * @param {object} plan - Optional plan to sync step statuses from before checkpointing
    */
-  async createCheckpoint(label = '') {
+  async createCheckpoint(label = '', plan = null) {
     if (!this.currentSession) return null;
+
+    // Sync step tracking with plan before checkpointing if provided
+    if (plan) {
+      this.syncPlanState(plan);
+    }
 
     const checkpointId = `cp_${Date.now().toString(36)}`;
     const checkpoint = {
@@ -307,10 +323,43 @@ export class StatePersistence {
   async setPlan(plan) {
     if (!this.currentSession) return false;
 
-    this.currentSession.plan = plan;
+    // Sync step tracking arrays with plan step statuses
+    this.syncPlanState(plan);
     this.currentSession.totalSteps = plan.steps?.length || 0;
     await this.saveSession();
     return true;
+  }
+
+  /**
+   * Sync step tracking arrays with actual plan step statuses
+   * This ensures completedSteps, failedSteps, and skippedSteps arrays
+   * are consistent with the step.status values in the plan
+   */
+  syncPlanState(plan) {
+    if (!this.currentSession || !plan?.steps) return;
+
+    // Reset and rebuild from plan step statuses
+    const completed = [];
+    const failed = [];
+    const skipped = [];
+
+    for (const step of plan.steps) {
+      // Skip subtasks for the main tracking (they're part of parent steps)
+      if (step.isSubtask) continue;
+
+      if (step.status === 'completed') {
+        completed.push(step.number);
+      } else if (step.status === 'failed') {
+        failed.push(step.number);
+      } else if (step.status === 'skipped') {
+        skipped.push(step.number);
+      }
+    }
+
+    this.currentSession.completedSteps = completed;
+    this.currentSession.failedSteps = failed;
+    this.currentSession.skippedSteps = skipped;
+    this.currentSession.plan = plan;
   }
 
   /**
@@ -420,9 +469,16 @@ export class StatePersistence {
 
   /**
    * Mark session as completed
+   * @param {object} summary - Optional summary object
+   * @param {object} plan - Optional plan to sync step statuses from
    */
-  async completeSession(summary = null) {
+  async completeSession(summary = null, plan = null) {
     if (!this.currentSession) return false;
+
+    // Sync step tracking arrays with plan before completing
+    if (plan) {
+      this.syncPlanState(plan);
+    }
 
     this.currentSession.status = 'completed';
     this.currentSession.completedAt = Date.now();

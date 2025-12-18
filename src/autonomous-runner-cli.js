@@ -917,7 +917,7 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         // Save plan to persistence
         if (this.enablePersistence) {
           await this.statePersistence.setPlan(plan);
-          await this.statePersistence.createCheckpoint('plan_created');
+          await this.statePersistence.createCheckpoint('plan_created', plan);
         }
 
         // Enable parallel execution if configured
@@ -1251,7 +1251,10 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
               );
               // Create checkpoint every 3 completed steps
               if (this.planner.getProgress().completed % 3 === 0) {
-                await this.statePersistence.createCheckpoint(`step_${completedStep.number}_complete`);
+                await this.statePersistence.createCheckpoint(
+                  `step_${completedStep.number}_complete`,
+                  this.planner.plan
+                );
               }
             }
 
@@ -1389,9 +1392,13 @@ Begin working on this sub-step now.`;
             claim: this.pendingCompletion,
           });
 
+          // Get plan progress to pass to verifier
+          const planProgress = this.planner?.getProgress() || null;
+
           const verification = await this.verifier.verify(
             this.pendingCompletion.claim,
-            this.workingDirectory
+            this.workingDirectory,
+            planProgress
           );
 
           this.onVerification({
@@ -1673,11 +1680,14 @@ YOUR TASK: Address the gaps and complete the goal. Focus on what's missing.`;
 
       // Complete session persistence
       if (this.enablePersistence) {
-        await this.statePersistence.completeSession({
-          verified: finalVerification?.overallPassed,
-          completedSteps: this.planner.getProgress().completed,
-          totalSteps: this.planner.getProgress().total,
-        });
+        await this.statePersistence.completeSession(
+          {
+            verified: finalVerification?.overallPassed,
+            completedSteps: this.planner.getProgress().completed,
+            totalSteps: this.planner.getProgress().total,
+          },
+          this.planner.plan  // Pass plan to sync step statuses
+        );
       }
 
       this.onComplete(finalReport);

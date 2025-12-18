@@ -9,6 +9,7 @@
 
 import { AutonomousRunnerCLI } from './autonomous-runner-cli.js';
 import { RetryableAutonomousRunner } from './retryable-runner.js';
+import { StatePersistence } from './state-persistence.js';
 import { parseArgs } from 'util';
 import { InkDashboard } from './ui/ink-dashboard.js';
 import { colors, style, icons } from './ui/terminal.js';
@@ -35,6 +36,9 @@ ${colors.white}${style.bold}OPTIONS:${style.reset}
   ${colors.green}-j, --json${style.reset}               Output progress as JSON
   ${colors.green}-r, --retry${style.reset}              Enable retry loop (continues until HIGH confidence)
   ${colors.green}--max-retries${style.reset} <n>        Maximum retry attempts [default: 100]
+  ${colors.green}-R, --resume${style.reset} [id]        Resume a previous session (shows selection if no ID given)
+  ${colors.green}--list-sessions${style.reset}          List all available sessions
+  ${colors.green}--state-dir${style.reset} <path>       Directory for session state [default: .claude-runner]
   ${colors.green}--ui${style.reset}                     Enable web UI for visualization (default port: 3000)
   ${colors.green}--ui-port${style.reset} <port>         Port for web UI [default: 3000]
   ${colors.green}-h, --help${style.reset}               Show this help message
@@ -66,6 +70,15 @@ ${colors.white}${style.bold}EXAMPLES:${style.reset}
 
   ${colors.gray}# Web UI on custom port${style.reset}
   ${colors.cyan}claude-auto${style.reset} --ui --ui-port 8080 "Build a REST API"
+
+  ${colors.gray}# Resume a previous session (interactive selection)${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --resume
+
+  ${colors.gray}# Resume a specific session by ID${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --resume mjbxfnxx_b4c8b44c715c
+
+  ${colors.gray}# List all sessions (including completed/failed)${style.reset}
+  ${colors.cyan}claude-auto${style.reset} --list-sessions
 
 ${colors.white}${style.bold}REQUIREMENTS:${style.reset}
   ${icons.arrow} Claude Code CLI must be installed and authenticated
@@ -391,8 +404,235 @@ async function runInDocker(args) {
   });
 }
 
+/**
+ * List available sessions for resuming
+ */
+async function listSessions(stateDir, workingDirectory) {
+  const persistence = new StatePersistence({
+    persistenceDir: stateDir,
+    workingDirectory: workingDirectory,
+  });
+  await persistence.initialize();
+
+  const sessions = await persistence.listSessions();
+
+  if (sessions.length === 0) {
+    log(`${icons.info} No sessions found.`, 'cyan');
+    log('Start a new session with: claude-auto "Your goal here"', 'dim');
+    return;
+  }
+
+  log(`\n${colors.cyan}${style.bold}Available Sessions${style.reset}\n`);
+  log(`${'─'.repeat(80)}`);
+
+  for (const session of sessions) {
+    const statusIcon = session.status === 'completed' ? colors.green + icons.success :
+                       session.status === 'failed' ? colors.red + icons.error :
+                       colors.yellow + icons.warning;
+    const statusText = session.status.toUpperCase();
+
+    const progress = session.totalSteps > 0
+      ? `${session.completedSteps}/${session.totalSteps} steps`
+      : 'No plan';
+
+    const age = formatAge(Date.now() - session.updatedAt);
+    const canResume = session.status !== 'completed' && session.status !== 'failed';
+
+    log(`${statusIcon} ${style.bold}${session.id}${style.reset}`);
+    log(`   ${colors.gray}Goal:${style.reset} ${truncate(session.goal, 60)}`);
+    log(`   ${colors.gray}Status:${style.reset} ${statusText}  ${colors.gray}Progress:${style.reset} ${progress}  ${colors.gray}Updated:${style.reset} ${age} ago`);
+    if (canResume) {
+      log(`   ${colors.cyan}→ Resume: claude-auto --resume ${session.id}${style.reset}`);
+    }
+    log('');
+  }
+}
+
+/**
+ * Interactive session selector using readline
+ */
+async function selectSession(sessions, persistencePath) {
+  const { createInterface } = await import('readline');
+
+  if (sessions.length === 0) {
+    log(`${icons.warning} No sessions found.`, 'yellow');
+    if (persistencePath) {
+      log(`Looked in: ${persistencePath}`, 'dim');
+    }
+    log('Start a new session with: claude-auto "Your goal here"', 'dim');
+    return null;
+  }
+
+  const resumableSessions = sessions.filter(
+    s => s.status !== 'completed' && s.status !== 'failed'
+  );
+
+  if (resumableSessions.length === 0) {
+    log(`${icons.warning} No resumable sessions found.`, 'yellow');
+    log(`Found ${sessions.length} session(s), but all are completed or failed.`, 'dim');
+    log('Start a new session with: claude-auto "Your goal here"', 'dim');
+    return null;
+  }
+
+  log(`\n${colors.cyan}${style.bold}Select a session to resume${style.reset}\n`);
+  log(`${'─'.repeat(80)}`);
+
+  resumableSessions.forEach((session, index) => {
+    const statusIcon = colors.yellow + icons.warning;
+    const progress = session.totalSteps > 0
+      ? `${session.completedSteps}/${session.totalSteps} steps`
+      : 'No plan';
+    const age = formatAge(Date.now() - session.updatedAt);
+
+    log(`  ${colors.cyan}${style.bold}[${index + 1}]${style.reset} ${session.id}`);
+    log(`      ${colors.gray}Goal:${style.reset} ${truncate(session.goal, 55)}`);
+    log(`      ${colors.gray}Progress:${style.reset} ${progress}  ${colors.gray}Updated:${style.reset} ${age} ago`);
+    log('');
+  });
+
+  log(`  ${colors.gray}[q] Cancel${style.reset}`);
+  log(`${'─'.repeat(80)}\n`);
+
+  const rl = createInterface({
+    input: process.stdin,
+    output: process.stdout,
+  });
+
+  return new Promise((resolve) => {
+    rl.question(`${colors.cyan}Enter selection (1-${resumableSessions.length}): ${style.reset}`, (answer) => {
+      rl.close();
+
+      const trimmed = answer.trim().toLowerCase();
+      if (trimmed === 'q' || trimmed === '') {
+        log('Cancelled.', 'dim');
+        resolve(null);
+        return;
+      }
+
+      const index = parseInt(trimmed, 10) - 1;
+      if (isNaN(index) || index < 0 || index >= resumableSessions.length) {
+        log(`${icons.error} Invalid selection.`, 'red');
+        resolve(null);
+        return;
+      }
+
+      resolve(resumableSessions[index]);
+    });
+  });
+}
+
+/**
+ * Handle --resume flag - find session and return info
+ */
+async function handleResume(sessionId, stateDir, workingDirectory) {
+  const persistence = new StatePersistence({
+    persistenceDir: stateDir,
+    workingDirectory: workingDirectory,
+  });
+  await persistence.initialize();
+
+  const sessions = await persistence.listSessions();
+
+  // If sessionId is '__SELECT__', show interactive picker
+  if (sessionId === '__SELECT__') {
+    const selected = await selectSession(sessions, persistence.persistencePath);
+    if (!selected) {
+      return null;
+    }
+
+    const progress = selected.totalSteps > 0
+      ? `${selected.completedSteps}/${selected.totalSteps} steps`
+      : 'No plan';
+
+    log(`\n${icons.success} Resuming session: ${selected.id}`, 'green');
+    log(`   ${colors.gray}Goal:${style.reset} ${truncate(selected.goal, 60)}`);
+    log(`   ${colors.gray}Progress:${style.reset} ${progress}`);
+    log('');
+
+    return {
+      sessionId: selected.id,
+      goal: selected.goal,
+    };
+  }
+
+  // Find the session by ID
+  const session = sessions.find(s => s.id === sessionId);
+  if (!session) {
+    log(`${icons.error} Session not found: ${sessionId}`, 'red');
+    log('Run --resume without an ID to select from available sessions.', 'dim');
+    return null;
+  }
+
+  if (session.status === 'completed') {
+    log(`${icons.warning} Session already completed: ${sessionId}`, 'yellow');
+    log('Start a new session with: claude-auto "Your goal here"', 'dim');
+    return null;
+  }
+
+  if (session.status === 'failed') {
+    log(`${icons.warning} Session failed: ${sessionId}`, 'yellow');
+    log('Start a new session with: claude-auto "Your goal here"', 'dim');
+    return null;
+  }
+
+  const progress = session.totalSteps > 0
+    ? `${session.completedSteps}/${session.totalSteps} steps`
+    : 'No plan';
+
+  log(`${icons.success} Resuming session: ${sessionId}`, 'green');
+  log(`   ${colors.gray}Goal:${style.reset} ${truncate(session.goal, 60)}`);
+  log(`   ${colors.gray}Progress:${style.reset} ${progress}`);
+  log('');
+
+  return {
+    sessionId: session.id,
+    goal: session.goal,
+  };
+}
+
+/**
+ * Format a duration as human-readable age
+ */
+function formatAge(ms) {
+  const seconds = Math.floor(ms / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+
+  if (days > 0) return `${days}d ${hours % 24}h`;
+  if (hours > 0) return `${hours}h ${minutes % 60}m`;
+  if (minutes > 0) return `${minutes}m`;
+  return `${seconds}s`;
+}
+
+/**
+ * Truncate string with ellipsis
+ */
+function truncate(str, maxLen) {
+  if (!str) return '';
+  if (str.length <= maxLen) return str;
+  return str.substring(0, maxLen - 3) + '...';
+}
+
 async function main() {
+  // Pre-process args to handle --resume without a value
+  // parseArgs doesn't support optional string values, so we detect --resume alone
+  const rawArgs = process.argv.slice(2);
+  const resumeIndex = rawArgs.findIndex(arg => arg === '--resume' || arg === '-R');
+  let resumeNeedsSelection = false;
+
+  if (resumeIndex !== -1) {
+    const nextArg = rawArgs[resumeIndex + 1];
+    // If --resume is last arg, or next arg starts with -, we need interactive selection
+    if (!nextArg || nextArg.startsWith('-')) {
+      resumeNeedsSelection = true;
+      // Insert a placeholder so parseArgs doesn't fail
+      rawArgs.splice(resumeIndex + 1, 0, '__SELECT__');
+    }
+  }
+
   const { values, positionals } = parseArgs({
+    args: rawArgs,
     options: {
       goal: { type: 'string', short: 'g' },
       'sub-goal': { type: 'string', short: 's', multiple: true },
@@ -404,6 +644,9 @@ async function main() {
       json: { type: 'boolean', short: 'j', default: false },
       retry: { type: 'boolean', short: 'r', default: false },
       'max-retries': { type: 'string', default: '100' },
+      resume: { type: 'string', short: 'R' },
+      'list-sessions': { type: 'boolean', default: false },
+      'state-dir': { type: 'string', default: '.claude-runner' },
       ui: { type: 'boolean', default: false },
       'ui-port': { type: 'string', default: '3000' },
       help: { type: 'boolean', short: 'h', default: false },
@@ -412,6 +655,11 @@ async function main() {
     },
     allowPositionals: true,
   });
+
+  // Mark if we need interactive selection
+  if (resumeNeedsSelection || values.resume === '__SELECT__') {
+    values.resume = '__SELECT__';
+  }
 
   if (values.help) {
     console.log(HELP_TEXT);
@@ -447,8 +695,26 @@ async function main() {
     process.exit(1);
   }
 
+  // Handle --list-sessions
+  if (values['list-sessions']) {
+    await listSessions(values['state-dir'], values.directory);
+    process.exit(0);
+  }
+
+  // Handle --resume
+  let resumeSessionId = null;
+  let resumedGoal = null;
+  if (values.resume !== undefined) {
+    const result = await handleResume(values.resume, values['state-dir'], values.directory);
+    if (!result) {
+      process.exit(1);
+    }
+    resumeSessionId = result.sessionId;
+    resumedGoal = result.goal;
+  }
+
   // Determine primary goal
-  const primaryGoal = values.goal || positionals[0];
+  const primaryGoal = resumedGoal || values.goal || positionals[0];
   if (!primaryGoal) {
     log(`${icons.error} Missing required argument: goal`, 'red');
     log('Usage: claude-auto "Your goal here"', 'dim');
@@ -537,6 +803,7 @@ async function main() {
         verbose: values.verbose,
         timeLimit: values['time-limit'],
         maxAttempts: parseInt(values['max-retries'], 10) || 100,
+        resumeSessionId,
         config: {
           verbose: values.verbose,
         },
@@ -545,6 +812,7 @@ async function main() {
     : new AutonomousRunnerCLI({
         workingDirectory: values.directory,
         verbose: values.verbose,
+        resumeSessionId,
         config: {
           verbose: values.verbose,
         },
