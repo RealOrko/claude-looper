@@ -261,11 +261,26 @@ export class StepDependencyAnalyzer {
 
   /**
    * Get steps ready to execute (all dependencies satisfied)
+   * Only returns leaf tasks - decomposed parents are traversed, not executed
    */
   getReadySteps(steps, completedStepNumbers = []) {
     return steps.filter(step => {
-      if (step.status === 'completed' || step.status === 'failed') return false;
+      // Filter out finished steps
+      if (step.status === 'completed' || step.status === 'failed' || step.status === 'skipped') {
+        return false;
+      }
       if (completedStepNumbers.includes(step.number)) return false;
+
+      // Filter out decomposed steps - their subtasks should be executed instead
+      // A decomposed step is one that has decomposedInto array (regardless of status field)
+      if (step.decomposedInto && step.decomposedInto.length > 0) {
+        return false;
+      }
+
+      // Filter out steps currently in progress (avoid duplicate execution)
+      if (step.status === 'in_progress') {
+        return false;
+      }
 
       // All dependencies must be completed (default to empty array if not set)
       return (step.dependencies || []).every(dep => completedStepNumbers.includes(dep));

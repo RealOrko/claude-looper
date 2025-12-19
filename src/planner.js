@@ -305,7 +305,7 @@ TOTAL_STEPS: [N]`;
       return step ? [step] : [];
     }
 
-    // Get completed step numbers
+    // Get completed step numbers - includes decomposed parents whose subtasks are all done
     const completed = this.plan.steps
       .filter(s => s.status === 'completed')
       .map(s => s.number);
@@ -316,7 +316,18 @@ TOTAL_STEPS: [N]`;
       return step ? [step] : [];
     }
 
-    // Get next batch of parallelizable steps
+    // Auto-complete any decomposed parents whose subtasks are all done
+    // This ensures they're counted as completed for dependency checking
+    for (const step of this.plan.steps) {
+      if (step.decomposedInto && step.decomposedInto.length > 0 && step.status !== 'completed') {
+        this.autoCompleteDecomposedStep(step);
+        if (step.status === 'completed' && !completed.includes(step.number)) {
+          completed.push(step.number);
+        }
+      }
+    }
+
+    // Get next batch of parallelizable steps (getReadySteps filters out decomposed parents)
     return this.dependencyAnalyzer.getNextParallelBatch(
       this.plan.steps,
       completed
@@ -368,14 +379,34 @@ TOTAL_STEPS: [N]`;
   }
 
   /**
-   * Update the current step pointer to next incomplete step
+   * Update the current step pointer to next incomplete step (hierarchy-aware)
+   * Skips decomposed steps since their subtasks will be found by getCurrentStep()
    */
   updateCurrentStepPointer() {
     if (!this.plan) return;
 
     for (let i = 0; i < this.plan.steps.length; i++) {
       const step = this.plan.steps[i];
-      if (step.status === 'pending' || step.status === 'in_progress') {
+
+      // Skip finished steps
+      if (step.status === 'completed' || step.status === 'failed' || step.status === 'skipped') {
+        continue;
+      }
+
+      // If decomposed, check if it has incomplete subtasks
+      if (step.decomposedInto && step.decomposedInto.length > 0) {
+        const hasIncompleteSubtask = this.findFirstIncompleteSubtask(step.decomposedInto);
+        if (hasIncompleteSubtask) {
+          this.currentStep = i;
+          return;
+        }
+        // All subtasks complete - auto-complete parent
+        this.autoCompleteDecomposedStep(step);
+        continue;
+      }
+
+      // Regular pending/in_progress step
+      if (step.status === 'pending' || step.status === 'in_progress' || step.status === 'decomposed') {
         this.currentStep = i;
         return;
       }
@@ -655,7 +686,54 @@ Keep to 2-5 steps. Be specific and actionable.`;
   }
 
   /**
-   * Get current step (sub-plan aware)
+   * Find the first incomplete subtask for a decomposed step
+   * Returns null if all subtasks are complete
+   */
+  findFirstIncompleteSubtask(subtaskNumbers) {
+    if (!subtaskNumbers || !this.plan) return null;
+
+    for (const num of subtaskNumbers) {
+      const subtask = this.plan.steps.find(s => s.number === num);
+      if (subtask && subtask.status !== 'completed' && subtask.status !== 'failed' && subtask.status !== 'skipped') {
+        // If this subtask is itself decomposed, recurse
+        if (subtask.decomposedInto && subtask.decomposedInto.length > 0) {
+          const nestedSubtask = this.findFirstIncompleteSubtask(subtask.decomposedInto);
+          if (nestedSubtask) return nestedSubtask;
+          // All nested subtasks complete - auto-complete this subtask
+          this.autoCompleteDecomposedStep(subtask);
+          continue;
+        }
+        return subtask;
+      }
+    }
+    return null; // All subtasks complete
+  }
+
+  /**
+   * Auto-complete a decomposed step when all its subtasks are done
+   */
+  autoCompleteDecomposedStep(step) {
+    if (!step || !step.decomposedInto) return;
+
+    // Verify all subtasks are actually complete
+    const allComplete = step.decomposedInto.every(num => {
+      const subtask = this.plan.steps.find(s => s.number === num);
+      return subtask && (subtask.status === 'completed' || subtask.status === 'failed' || subtask.status === 'skipped');
+    });
+
+    if (allComplete && step.status !== 'completed') {
+      step.status = 'completed';
+      step.completedViaSubtasks = true;
+      step.endTime = Date.now();
+      if (step.startTime) {
+        step.duration = step.endTime - step.startTime;
+      }
+    }
+  }
+
+  /**
+   * Get current step (sub-plan and decomposition aware)
+   * Uses hierarchy-aware selection: decomposed parents are traversed, not executed
    */
   getCurrentStep() {
     // If in sub-plan, return sub-plan step
@@ -668,11 +746,40 @@ Keep to 2-5 steps. Be specific and actionable.`;
       return { ...step, isSubStep: true, parentStep: this.subPlanParentStep };
     }
 
-    // Otherwise return main plan step
-    if (!this.plan || this.currentStep >= this.plan.steps.length) {
-      return null;
+    if (!this.plan) return null;
+
+    // Scan through steps looking for first executable work
+    for (let i = 0; i < this.plan.steps.length; i++) {
+      const step = this.plan.steps[i];
+
+      // Skip finished steps
+      if (step.status === 'completed' || step.status === 'failed' || step.status === 'skipped') {
+        continue;
+      }
+
+      // If step is decomposed, look for incomplete subtasks
+      if (step.decomposedInto && step.decomposedInto.length > 0) {
+        const subtask = this.findFirstIncompleteSubtask(step.decomposedInto);
+        if (subtask) {
+          // Update currentStep pointer for compatibility
+          this.currentStep = i;
+          return subtask;
+        }
+        // All subtasks complete - auto-complete parent and continue scanning
+        this.autoCompleteDecomposedStep(step);
+        continue;
+      }
+
+      // Regular pending/in_progress step - return it
+      if (step.status === 'pending' || step.status === 'in_progress') {
+        this.currentStep = i;
+        return step;
+      }
     }
-    return this.plan.steps[this.currentStep];
+
+    // No executable work found
+    this.currentStep = this.plan.steps.length;
+    return null;
   }
 
   /**

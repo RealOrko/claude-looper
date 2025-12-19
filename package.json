@@ -8,6 +8,7 @@
     "claude-auto": "./src/cli-max.js"
   },
   "scripts": {
+    "copy-state": "rm -rf ./tmp && mkdir ./tmp && cp -r ../claude-looper-2/.claude-runner/* ./tmp/",
     "start": "node src/cli-max.js",
     "test": "vitest run",
     "test:watch": "vitest",
