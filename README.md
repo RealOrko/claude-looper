@@ -9,7 +9,7 @@
 - 👁️ **LLM Supervision**: Sonnet-powered supervisor monitors progress and corrects drift
 - ✅ **Step Verification**: Each step completion is verified before advancing
 - 🔀 **Sub-plan Retry**: Blocked steps trigger alternative approach planning
-- 🎯 **Final Verification**: Goal achievement verified with smoke tests
+- 🎯 **Final Verification**: Goal achievement verified before completion
 - 🐳 **Docker Support**: Run in isolated container with credential mounting
 - 💾 **State Persistence**: Save and resume sessions across restarts
 - 🌐 **Web UI**: Real-time visualization dashboard for monitoring progress
@@ -178,7 +178,7 @@ Each retry:
 │  4. ✅ Step Verification: Each "STEP COMPLETE" claim is verified    │
 │  5. 👁️ Supervision: Sonnet monitors progress, corrects drift        │
 │  6. 🔀 Sub-plan Retry: Blocked steps trigger alternative approaches │
-│  7. 🎯 Final Verification: Goal achievement + smoke tests           │
+│  7. 🎯 Final Verification: Goal achievement verified                 │
 │  8. 🏁 Complete: Verified success, time expired, or aborted         │
 └─────────────────────────────────────────────────────────────────────┘
 ```
@@ -226,7 +226,6 @@ When all steps complete, a 3-layer verification validates the claim:
 After step completion, additional verification ensures:
 - ✅ Original goal was achieved (not just steps completed)
 - ⚡ Result is functional and complete
-- 🧪 Smoke tests pass (npm test, pytest, go test, make test)
 
 ## 🔀 Sub-plan Retry
 
