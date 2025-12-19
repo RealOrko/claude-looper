@@ -895,10 +895,14 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         this.planner.restorePlan(resumedSession.plan, resumedSession.currentStep);
         this.planCreated = true;
 
+        // Get the first incomplete step number from the planner (after it recalculates)
+        const nextStep = this.planner.getCurrentStep();
+        const nextStepNumber = nextStep?.number || (this.planner.currentStep + 1);
+
         this.onProgress({
           type: 'plan_restored',
           plan: resumedSession.plan,
-          currentStep: resumedSession.currentStep,
+          currentStep: nextStepNumber,
           completedSteps: resumedSession.completedSteps,
         });
       } else {

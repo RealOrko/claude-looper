@@ -164,7 +164,7 @@ TOTAL_STEPS: [N]`;
     this.plan = savedPlan;
     this.currentStep = currentStep;
 
-    // Restore step statuses
+    // Restore step statuses for steps that don't have one
     if (this.plan?.steps) {
       for (let i = 0; i < currentStep && i < this.plan.steps.length; i++) {
         if (!this.plan.steps[i].status) {
@@ -172,6 +172,10 @@ TOTAL_STEPS: [N]`;
         }
       }
     }
+
+    // Recalculate currentStep based on actual step statuses
+    // This ensures we resume from the first incomplete step, not a stale value
+    this.updateCurrentStepPointer();
 
     return this.plan;
   }
