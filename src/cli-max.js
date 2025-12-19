@@ -238,6 +238,19 @@ function verboseProgress(data) {
   } else if (data.type === 'time_exhausted') {
     console.log(`\n[TIME EXHAUSTED] No time for more attempts`);
     console.log(`  Completed ${data.totalAttempts} attempt(s)`);
+  } else if (data.type === 'abort_replanning') {
+    console.log(`\n${'─'.repeat(60)}`);
+    console.log(`[ABORT RE-PLAN] Cycle ${data.cycle}/${data.maxCycles}`);
+    console.log(`  Reason: ${data.reason}`);
+    console.log(`  Progress: ${data.currentProgress?.completed || 0}/${data.currentProgress?.total || 0} steps`);
+    console.log(`  Creating new plan to address drift...`);
+  } else if (data.type === 'abort_replan_created') {
+    console.log(`  ✓ New plan created with ${data.steps} steps`);
+    console.log(`  Previously completed: ${data.previouslyCompleted} steps`);
+    console.log(`${'─'.repeat(60)}\n`);
+  } else if (data.type === 'max_abort_replans_reached') {
+    console.log(`\n[MAX ABORT REPLANS] Reached limit of ${data.cycles} re-plan cycles`);
+    console.log(`  ${data.message}`);
   } else {
     if (data.iteration) console.log(`  Iteration: ${data.iteration}`);
     if (data.planProgress) console.log(`  Plan: ${data.planProgress.current}/${data.planProgress.total} steps`);

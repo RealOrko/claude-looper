@@ -559,6 +559,19 @@ export class InkDashboard {
     } else if (data.type === 'final_verification_failed') {
       this.state.status = 'error';
       this.addLog('error', `Final verification FAILED: ${data.reason?.substring(0, 60) || 'see report'}`);
+    } else if (data.type === 'abort_replanning') {
+      this.state.status = 'planning';
+      const progress = data.currentProgress;
+      this.addLog('warning', `ABORT: Re-planning (cycle ${data.cycle}/${data.maxCycles})`);
+      this.addLog('info', `Progress: ${progress?.completed || 0}/${progress?.total || 0} steps completed`);
+    } else if (data.type === 'abort_replan_created') {
+      this.state.status = 'running';
+      this.state.plan = data.plan;
+      this.state.currentStep = 1;
+      this.addLog('success', `New plan created with ${data.steps} steps (was ${data.previouslyCompleted} completed)`);
+    } else if (data.type === 'max_abort_replans_reached') {
+      this.state.status = 'error';
+      this.addLog('error', `Max abort re-plans reached (${data.cycles} cycles) - stopping`);
     }
     // Note: this.update() is called by updateProgress() wrapper after this method returns
   }

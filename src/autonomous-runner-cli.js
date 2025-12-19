@@ -255,6 +255,7 @@ export class AutonomousRunnerCLI {
 
     // Abort tracking
     this.abortReason = null;
+    this.needsReplanDueToAbort = false; // Flag for abort-triggered re-planning
 
     // Adaptive delay tracking
     this.lastIterationSuccess = true;
@@ -542,7 +543,7 @@ Begin immediately.`;
       if (action === 'ABORT') {
         // Record abort decision
         this.contextManager.recordDecision(
-          'Session aborted due to persistent drift',
+          'Session aborted due to persistent drift - will re-plan',
           `Score: ${supervisionResult.assessment.score}, Consecutive issues: ${supervisionResult.consecutiveIssues}`
         );
 
@@ -551,11 +552,14 @@ Begin immediately.`;
           iteration: this.iterationCount,
           consecutiveIssues: supervisionResult.consecutiveIssues,
           score: supervisionResult.assessment.score,
-          message: 'Session terminated due to persistent drift',
+          message: 'Session aborted due to drift - triggering re-plan',
         });
-        this.shouldStop = true;
+
+        // Set flag to trigger re-planning instead of full stop
+        // The outer bulletproof loop will handle creating a new plan
+        this.needsReplanDueToAbort = true;
         this.abortReason = 'Escalation: unable to maintain goal focus';
-        // Still send the ABORT prompt for a final summary
+        // Still send the ABORT prompt for a final summary before re-planning
       }
     }
 
@@ -990,6 +994,10 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
       const maxGoalCycles = 10; // Max times to retry after plan "completes"
       let finalVerification = null; // Stores the verification result from the last cycle
 
+      // Track abort re-planning cycles to prevent infinite loops
+      let abortReplanCycles = 0;
+      const maxAbortReplans = 5; // Max times to re-plan after abort before giving up
+
       // OUTER BULLETPROOF LOOP - only exits on time expiry or user stop
       // This loop continues even when plan "completes" if goal isn't achieved
       while (!this.shouldStop && !this.phaseManager.isTimeExpired()) {
@@ -997,7 +1005,8 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
         this.consecutiveAbortErrors = 0;
 
         // Inner loop: execute current plan
-        while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete()) {
+        // Exits on: user stop, time expiry, plan complete, OR abort (triggers re-plan)
+        while (!this.shouldStop && !this.phaseManager.isTimeExpired() && !this.planner.isComplete() && !this.needsReplanDueToAbort) {
         let iterationResult;
         let retries = 0;
         const maxRetries = this.config.get('maxRetries');
@@ -1468,6 +1477,81 @@ Begin working on this sub-step now.`;
         // Check if we should exit the outer bulletproof loop
         if (this.shouldStop || this.phaseManager.isTimeExpired()) {
           break; // User stopped or time expired - exit outer loop
+        }
+
+        // Handle abort-triggered re-planning
+        // When supervisor ABORTs due to drift, we create a new plan and continue
+        if (this.needsReplanDueToAbort) {
+          abortReplanCycles++;
+
+          // Safety limit: don't re-plan forever
+          if (abortReplanCycles > maxAbortReplans) {
+            this.onProgress({
+              type: 'max_abort_replans_reached',
+              cycles: abortReplanCycles,
+              message: 'Max abort re-planning cycles reached - stopping',
+            });
+            this.shouldStop = true;
+            this.abortReason = `Reached max abort re-plan limit (${maxAbortReplans})`;
+            break;
+          }
+
+          this.onProgress({
+            type: 'abort_replanning',
+            reason: this.abortReason,
+            currentProgress: this.planner.getProgress(),
+            cycle: abortReplanCycles,
+            maxCycles: maxAbortReplans,
+            message: 'Creating new plan after abort due to goal drift',
+          });
+
+          // Gather context about what went wrong
+          const currentStep = this.planner.getCurrentStep();
+          const completedSteps = this.planner.plan.steps.filter(s => s.status === 'completed');
+          const failedSteps = this.planner.plan.steps.filter(s => s.status === 'failed');
+          const pendingSteps = this.planner.plan.steps.filter(s => s.status === 'pending' || s.status === 'in_progress');
+
+          const abortContext = `
+PREVIOUS SESSION ABORTED DUE TO GOAL DRIFT
+
+What was completed:
+${completedSteps.map(s => `- Step ${s.number}: ${s.description}`).join('\n') || '- None'}
+
+What failed:
+${failedSteps.map(s => `- Step ${s.number}: ${s.description} (${s.failReason || 'unknown reason'})`).join('\n') || '- None'}
+
+What was pending when aborted:
+${pendingSteps.map(s => `- Step ${s.number}: ${s.description}`).join('\n') || '- None'}
+
+Current step at abort: ${currentStep ? `Step ${currentStep.number}: ${currentStep.description}` : 'None'}
+
+Abort reason: ${this.abortReason}
+
+IMPORTANT: Focus on completing the remaining work. Do not repeat completed steps.
+The previous session drifted off-topic - stay focused on the goal.`;
+
+          // Reset state for new plan
+          this.needsReplanDueToAbort = false;
+          this.abortReason = null;
+          this.supervisor.consecutiveIssues = 0; // Reset supervisor escalation counter
+          this.client.reset(); // Reset client session for fresh start
+
+          // Create new plan with abort context
+          const newPlan = await this.planner.createPlan(
+            this.primaryGoal,
+            (this.initialContext || '') + '\n\n' + abortContext,
+            this.workingDirectory
+          );
+
+          this.onProgress({
+            type: 'abort_replan_created',
+            plan: newPlan,
+            steps: newPlan.totalSteps,
+            previouslyCompleted: completedSteps.length,
+          });
+
+          // Continue the outer loop - will start executing new plan
+          continue;
         }
 
         // Plan is "complete" (all steps processed) - but is the goal achieved?
