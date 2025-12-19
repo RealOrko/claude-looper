@@ -988,6 +988,7 @@ Focus on completing this step. Say "STEP COMPLETE" when done.`;
       // Track retry cycles for when plan completes but goal isn't achieved
       let goalAchievementCycles = 0;
       const maxGoalCycles = 10; // Max times to retry after plan "completes"
+      let finalVerification = null; // Stores the verification result from the last cycle
 
       // OUTER BULLETPROOF LOOP - only exits on time expiry or user stop
       // This loop continues even when plan "completes" if goal isn't achieved
@@ -1482,53 +1483,156 @@ Begin working on this sub-step now.`;
           break; // Safety limit reached
         }
 
-        // Quick goal verification to decide if we should create a new plan
-        const quickVerification = await this.supervisor.verifyGoalAchieved(
-          this.primaryGoal,
-          this.planner.plan.steps,
-          this.workingDirectory
-        );
-
-        this.onProgress({
-          type: 'cycle_verification',
-          cycle: goalAchievementCycles,
-          achieved: quickVerification.achieved,
-          confidence: quickVerification.confidence,
-          gaps: quickVerification.gaps,
-        });
-
-        // If goal achieved with HIGH confidence, exit
-        if (quickVerification.achieved === true && quickVerification.confidence === 'HIGH') {
+        // Full verification: Goal verification + Smoke tests (inside the loop so we can retry)
+        let cycleVerification = null;
+        if (this.planner?.isComplete() && !this.abortReason) {
           this.onProgress({
-            type: 'goal_achieved',
-            confidence: quickVerification.confidence,
+            type: 'final_verification_started',
             cycle: goalAchievementCycles,
           });
-          break; // Goal achieved - exit outer loop
+
+          // 1. Verify the original goal was achieved (not just steps)
+          const goalVerification = await this.supervisor.verifyGoalAchieved(
+            this.primaryGoal,
+            this.planner.plan.steps,
+            this.workingDirectory
+          );
+
+          this.onProgress({
+            type: 'goal_verification_complete',
+            cycle: goalAchievementCycles,
+            result: goalVerification,
+          });
+
+          // 2. Run smoke tests
+          const smokeTests = await this.verifier.runSmokeTests(
+            this.primaryGoal,
+            this.workingDirectory
+          );
+
+          this.onProgress({
+            type: 'smoke_tests_complete',
+            cycle: goalAchievementCycles,
+            result: smokeTests,
+          });
+
+          // Handle verification timeout/error gracefully:
+          // - achieved === true: goal verified as achieved
+          // - achieved === false: goal verified as NOT achieved
+          // - achieved === null: verification inconclusive (timeout/error)
+          //   In this case, if smoke tests pass and most steps completed, consider it likely passed
+          const verificationInconclusive = isInconclusive(goalVerification.achieved);
+          const stepProgress = this.planner.getProgress();
+          const mostStepsCompleted = stepProgress.percentComplete >= 70;
+
+          // Calculate overall result
+          // Note: goalVerification.achieved can be string ('YES'/'NO'/'PARTIAL'), boolean, or null
+          let overallPassed;
+          if (isTruthy(goalVerification.achieved)) {
+            overallPassed = smokeTests.passed;
+          } else if (isFalsy(goalVerification.achieved)) {
+            overallPassed = false;
+          } else {
+            // PARTIAL or verification inconclusive - rely on smoke tests + step completion
+            overallPassed = smokeTests.passed && mostStepsCompleted;
+          }
+
+          cycleVerification = {
+            goalVerification,
+            smokeTests,
+            overallPassed,
+            verificationInconclusive,
+          };
+
+          // Update final summary with verification results
+          if (this.finalSummary) {
+            this.finalSummary.goalVerification = goalVerification;
+            this.finalSummary.smokeTests = smokeTests;
+            this.finalSummary.fullyVerified = cycleVerification.overallPassed;
+          }
+
+          // If verification passed, we're done!
+          if (cycleVerification.overallPassed) {
+            const suffix = verificationInconclusive ? ' (verification inconclusive but smoke tests passed)' : '';
+            this.contextManager.recordMilestone(
+              `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...${suffix}`
+            );
+
+            this.onProgress({
+              type: 'final_verification_passed',
+              cycle: goalAchievementCycles,
+              goalVerification,
+              smokeTests,
+              verificationInconclusive,
+            });
+
+            // Store the successful verification and exit the loop
+            finalVerification = cycleVerification;
+            break;
+          }
+
+          // Verification FAILED - record and prepare for retry
+          const failReason = verificationInconclusive && smokeTests.passed
+            ? `Verification inconclusive and steps incomplete (${stepProgress.percentComplete}%)`
+            : isTruthy(goalVerification.achieved)
+              ? `Smoke tests failed: ${smokeTests.summary}`
+              : `Goal not achieved: ${goalVerification.reason}`;
+          this.contextManager.recordDecision('Verification failed - will retry', failReason);
+
+          this.onProgress({
+            type: 'final_verification_failed',
+            cycle: goalAchievementCycles,
+            goalVerification,
+            smokeTests,
+            verificationInconclusive,
+            reason: failReason,
+            willRetry: !this.phaseManager.isTimeExpired() && goalAchievementCycles < maxGoalCycles,
+          });
+
+          // Store for potential final report (if we run out of retries)
+          finalVerification = cycleVerification;
         }
 
-        // Goal NOT achieved - create new plan targeting gaps
+        // Goal NOT verified - create new plan targeting gaps (if we have time)
         if (!this.phaseManager.isTimeExpired() && !this.shouldStop) {
           const failedSteps = this.planner.plan.steps.filter(s => s.status === 'failed');
-          const gaps = quickVerification.gaps || failedSteps.map(s => s.description).join(', ');
+          const verificationGaps = cycleVerification?.goalVerification?.gaps;
+          const smokeTestFailures = cycleVerification?.smokeTests?.tests
+            ?.filter(t => !t.passed)
+            ?.map(t => t.description)
+            ?.join(', ');
+
+          // Combine all gap sources for comprehensive context
+          const gaps = verificationGaps || smokeTestFailures || failedSteps.map(s => s.description).join(', ') || 'verification failed';
 
           this.onProgress({
             type: 'creating_gap_plan',
             cycle: goalAchievementCycles,
             gaps,
             failedSteps: failedSteps.length,
+            smokeTestFailures: smokeTestFailures || 'none',
             timeRemaining: this.phaseManager.getTimeStatus().remaining,
           });
 
-          // Reset planner for new attempt
+          // Build comprehensive context for the gap plan
+          const verificationDetails = cycleVerification ? `
+- Goal achieved: ${cycleVerification.goalVerification?.achieved || 'unknown'}
+- Confidence: ${cycleVerification.goalVerification?.confidence || 'unknown'}
+- Functional: ${cycleVerification.goalVerification?.functional || 'unknown'}
+- Smoke tests: ${cycleVerification.smokeTests?.passed ? 'PASSED' : 'FAILED'} (${cycleVerification.smokeTests?.tests?.length || 0} tests)
+- Verification gaps: ${verificationGaps || 'none specified'}
+- Recommendation: ${cycleVerification.goalVerification?.recommendation || 'none'}` : '';
+
           const gapContext = `
 PREVIOUS ATTEMPT (Cycle ${goalAchievementCycles}):
 - Completed: ${this.planner.getProgress().completed}/${this.planner.getProgress().total} steps
 - Failed steps: ${failedSteps.map(s => s.description).join(', ') || 'none'}
-- Gaps identified: ${gaps || 'none specified'}
-- Verification result: ${quickVerification.achieved === null ? 'inconclusive' : quickVerification.achieved ? 'partial' : 'not achieved'}
+${verificationDetails}
 
-YOUR TASK: Address the gaps and complete the goal. Focus on what's missing.`;
+CRITICAL GAPS TO ADDRESS:
+${gaps}
+
+YOUR TASK: The goal was NOT achieved. Address the gaps above and complete the goal. Focus on what's missing or broken.`;
 
           // Create new plan for gaps
           const newPlan = await this.planner.createPlan(
@@ -1565,114 +1669,6 @@ YOUR TASK: Address the gaps and complete the goal. Focus on what's missing.`;
           }
         } catch (e) {
           // Ignore errors on final summary
-        }
-      }
-
-      // Final verification: Goal verification + Smoke tests (if plan completed)
-      let finalVerification = null;
-      if (this.planner?.isComplete() && !this.abortReason) {
-        this.onProgress({ type: 'final_verification_started' });
-
-        // 1. Verify the original goal was achieved (not just steps)
-        const goalVerification = await this.supervisor.verifyGoalAchieved(
-          this.primaryGoal,
-          this.planner.plan.steps,
-          this.workingDirectory
-        );
-
-        this.onProgress({
-          type: 'goal_verification_complete',
-          result: goalVerification,
-        });
-
-        // 2. Run smoke tests
-        const smokeTests = await this.verifier.runSmokeTests(
-          this.primaryGoal,
-          this.workingDirectory
-        );
-
-        this.onProgress({
-          type: 'smoke_tests_complete',
-          result: smokeTests,
-        });
-
-        // Handle verification timeout/error gracefully:
-        // - achieved === true: goal verified as achieved
-        // - achieved === false: goal verified as NOT achieved
-        // - achieved === null: verification inconclusive (timeout/error)
-        //   In this case, if smoke tests pass and most steps completed, consider it likely passed
-        const verificationInconclusive = isInconclusive(goalVerification.achieved);
-        const stepProgress = this.planner.getProgress();
-        const mostStepsCompleted = stepProgress.percentComplete >= 70;
-
-        // Calculate overall result
-        // Note: goalVerification.achieved can be string ('YES'/'NO'/'PARTIAL'), boolean, or null
-        let overallPassed;
-        if (isTruthy(goalVerification.achieved)) {
-          overallPassed = smokeTests.passed;
-        } else if (isFalsy(goalVerification.achieved)) {
-          overallPassed = false;
-        } else {
-          // PARTIAL or verification inconclusive - rely on smoke tests + step completion
-          overallPassed = smokeTests.passed && mostStepsCompleted;
-        }
-
-        finalVerification = {
-          goalVerification,
-          smokeTests,
-          overallPassed,
-          verificationInconclusive,
-        };
-
-        // Record milestone for final verification
-        if (finalVerification.overallPassed) {
-          const suffix = verificationInconclusive ? ' (verification inconclusive but smoke tests passed)' : '';
-          this.contextManager.recordMilestone(
-            `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...${suffix}`
-          );
-        } else {
-          const reason = verificationInconclusive && smokeTests.passed
-            ? `Verification inconclusive and steps incomplete (${stepProgress.percentComplete}%)`
-            : goalVerification.achieved === true
-              ? `Smoke tests failed: ${smokeTests.summary}`
-              : `Goal not achieved: ${goalVerification.reason}`;
-          this.contextManager.recordDecision('Final verification failed', reason);
-        }
-
-        // Update final summary with verification results
-        if (this.finalSummary) {
-          this.finalSummary.goalVerification = goalVerification;
-          this.finalSummary.smokeTests = smokeTests;
-          this.finalSummary.fullyVerified = finalVerification.overallPassed;
-        }
-
-        // Emit progress based on result
-        if (!finalVerification.overallPassed) {
-          let reason;
-          if (verificationInconclusive) {
-            reason = smokeTests.passed
-              ? `Verification inconclusive (timeout) but smoke tests passed - steps ${stepProgress.percentComplete}% complete`
-              : `Verification inconclusive (timeout) and smoke tests failed`;
-          } else if (goalVerification.achieved === true) {
-            reason = `Smoke tests failed: ${smokeTests.summary}`;
-          } else {
-            reason = `Goal not achieved: ${goalVerification.reason}`;
-          }
-
-          this.onProgress({
-            type: 'final_verification_failed',
-            goalVerification,
-            smokeTests,
-            verificationInconclusive,
-            reason,
-          });
-        } else {
-          this.onProgress({
-            type: 'final_verification_passed',
-            goalVerification,
-            smokeTests,
-            verificationInconclusive,
-          });
         }
       }
 
