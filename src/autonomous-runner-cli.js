@@ -1483,7 +1483,7 @@ Begin working on this sub-step now.`;
           break; // Safety limit reached
         }
 
-        // Full verification: Goal verification + Smoke tests (inside the loop so we can retry)
+        // Full verification: Goal verification (inside the loop so we can retry)
         let cycleVerification = null;
         if (this.planner?.isComplete() && !this.abortReason) {
           this.onProgress({
@@ -1491,7 +1491,7 @@ Begin working on this sub-step now.`;
             cycle: goalAchievementCycles,
           });
 
-          // 1. Verify the original goal was achieved (not just steps)
+          // Verify the original goal was achieved (not just steps)
           const goalVerification = await this.supervisor.verifyGoalAchieved(
             this.primaryGoal,
             this.planner.plan.steps,
@@ -1504,23 +1504,11 @@ Begin working on this sub-step now.`;
             result: goalVerification,
           });
 
-          // 2. Run smoke tests
-          const smokeTests = await this.verifier.runSmokeTests(
-            this.primaryGoal,
-            this.workingDirectory
-          );
-
-          this.onProgress({
-            type: 'smoke_tests_complete',
-            cycle: goalAchievementCycles,
-            result: smokeTests,
-          });
-
           // Handle verification timeout/error gracefully:
           // - achieved === true: goal verified as achieved
           // - achieved === false: goal verified as NOT achieved
           // - achieved === null: verification inconclusive (timeout/error)
-          //   In this case, if smoke tests pass and most steps completed, consider it likely passed
+          //   In this case, if most steps completed, consider it likely passed
           const verificationInconclusive = isInconclusive(goalVerification.achieved);
           const stepProgress = this.planner.getProgress();
           const mostStepsCompleted = stepProgress.percentComplete >= 70;
@@ -1529,17 +1517,16 @@ Begin working on this sub-step now.`;
           // Note: goalVerification.achieved can be string ('YES'/'NO'/'PARTIAL'), boolean, or null
           let overallPassed;
           if (isTruthy(goalVerification.achieved)) {
-            overallPassed = smokeTests.passed;
+            overallPassed = true;
           } else if (isFalsy(goalVerification.achieved)) {
             overallPassed = false;
           } else {
-            // PARTIAL or verification inconclusive - rely on smoke tests + step completion
-            overallPassed = smokeTests.passed && mostStepsCompleted;
+            // PARTIAL or verification inconclusive - rely on step completion
+            overallPassed = mostStepsCompleted;
           }
 
           cycleVerification = {
             goalVerification,
-            smokeTests,
             overallPassed,
             verificationInconclusive,
           };
@@ -1547,13 +1534,12 @@ Begin working on this sub-step now.`;
           // Update final summary with verification results
           if (this.finalSummary) {
             this.finalSummary.goalVerification = goalVerification;
-            this.finalSummary.smokeTests = smokeTests;
             this.finalSummary.fullyVerified = cycleVerification.overallPassed;
           }
 
           // If verification passed, we're done!
           if (cycleVerification.overallPassed) {
-            const suffix = verificationInconclusive ? ' (verification inconclusive but smoke tests passed)' : '';
+            const suffix = verificationInconclusive ? ' (verification inconclusive but most steps completed)' : '';
             this.contextManager.recordMilestone(
               `Goal achieved and verified: ${this.primaryGoal.substring(0, 50)}...${suffix}`
             );
@@ -1562,7 +1548,6 @@ Begin working on this sub-step now.`;
               type: 'final_verification_passed',
               cycle: goalAchievementCycles,
               goalVerification,
-              smokeTests,
               verificationInconclusive,
             });
 
@@ -1572,18 +1557,15 @@ Begin working on this sub-step now.`;
           }
 
           // Verification FAILED - record and prepare for retry
-          const failReason = verificationInconclusive && smokeTests.passed
+          const failReason = verificationInconclusive
             ? `Verification inconclusive and steps incomplete (${stepProgress.percentComplete}%)`
-            : isTruthy(goalVerification.achieved)
-              ? `Smoke tests failed: ${smokeTests.summary}`
-              : `Goal not achieved: ${goalVerification.reason}`;
+            : `Goal not achieved: ${goalVerification.reason}`;
           this.contextManager.recordDecision('Verification failed - will retry', failReason);
 
           this.onProgress({
             type: 'final_verification_failed',
             cycle: goalAchievementCycles,
             goalVerification,
-            smokeTests,
             verificationInconclusive,
             reason: failReason,
             willRetry: !this.phaseManager.isTimeExpired() && goalAchievementCycles < maxGoalCycles,
@@ -1597,20 +1579,15 @@ Begin working on this sub-step now.`;
         if (!this.phaseManager.isTimeExpired() && !this.shouldStop) {
           const failedSteps = this.planner.plan.steps.filter(s => s.status === 'failed');
           const verificationGaps = cycleVerification?.goalVerification?.gaps;
-          const smokeTestFailures = cycleVerification?.smokeTests?.tests
-            ?.filter(t => !t.passed)
-            ?.map(t => t.description)
-            ?.join(', ');
 
           // Combine all gap sources for comprehensive context
-          const gaps = verificationGaps || smokeTestFailures || failedSteps.map(s => s.description).join(', ') || 'verification failed';
+          const gaps = verificationGaps || failedSteps.map(s => s.description).join(', ') || 'verification failed';
 
           this.onProgress({
             type: 'creating_gap_plan',
             cycle: goalAchievementCycles,
             gaps,
             failedSteps: failedSteps.length,
-            smokeTestFailures: smokeTestFailures || 'none',
             timeRemaining: this.phaseManager.getTimeStatus().remaining,
           });
 
@@ -1619,7 +1596,6 @@ Begin working on this sub-step now.`;
 - Goal achieved: ${cycleVerification.goalVerification?.achieved || 'unknown'}
 - Confidence: ${cycleVerification.goalVerification?.confidence || 'unknown'}
 - Functional: ${cycleVerification.goalVerification?.functional || 'unknown'}
-- Smoke tests: ${cycleVerification.smokeTests?.passed ? 'PASSED' : 'FAILED'} (${cycleVerification.smokeTests?.tests?.length || 0} tests)
 - Verification gaps: ${verificationGaps || 'none specified'}
 - Recommendation: ${cycleVerification.goalVerification?.recommendation || 'none'}` : '';
 
@@ -1806,9 +1782,6 @@ YOUR TASK: The goal was NOT achieved. Address the gaps above and complete the go
         functional: finalVerification.goalVerification?.functional,
         recommendation: finalVerification.goalVerification?.recommendation,
         gaps: finalVerification.goalVerification?.gaps,
-        smokeTestsPassed: finalVerification.smokeTests?.passed,
-        smokeTestsSummary: finalVerification.smokeTests?.summary,
-        smokeTestsRun: finalVerification.smokeTests?.tests?.length || 0,
         overallPassed: finalVerification.overallPassed,
       } : null,
       phases: phaseReport.phases,

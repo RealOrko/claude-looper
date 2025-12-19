@@ -553,13 +553,6 @@ export class InkDashboard {
       } else {
         this.addLog('warning', `Goal not verified: ${result?.reason?.substring(0, 60) || 'unknown'}`);
       }
-    } else if (data.type === 'smoke_tests_complete') {
-      const result = data.result;
-      if (result?.passed) {
-        this.addLog('success', `Smoke tests: ${result.summary || 'passed'}`);
-      } else {
-        this.addLog('warning', `Smoke tests: ${result?.summary || 'failed'}`);
-      }
     } else if (data.type === 'final_verification_passed') {
       this.state.status = 'completed';
       this.addLog('success', 'Final verification PASSED');
@@ -681,9 +674,6 @@ export class InkDashboard {
       if (fv.gaps) {
         console.log(`    \x1b[33m⚠\x1b[0m Gaps: ${fv.gaps}`);
       }
-
-      const smokeIcon = fv.smokeTestsPassed ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
-      console.log(`    ${smokeIcon} Smoke Tests: ${fv.smokeTestsSummary || (fv.smokeTestsPassed ? 'Passed' : 'Failed')}`);
 
       const overallIcon = fv.overallPassed ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
       const overallColor = fv.overallPassed ? '\x1b[32m' : '\x1b[31m';

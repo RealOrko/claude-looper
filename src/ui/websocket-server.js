@@ -471,16 +471,6 @@ export class AgentWebSocketServer extends EventEmitter {
           `${goalIcon} Goal: ${data.result?.achieved ? 'Achieved' : 'Not achieved'} (${data.result?.confidence})`);
         break;
 
-      case 'smoke_tests_complete':
-        this.state.verification = {
-          ...this.state.verification,
-          smokeTests: data.result,
-        };
-        const testIcon = data.result?.passed ? '✓' : '✗';
-        this._addLog(data.result?.passed ? 'success' : 'warning',
-          `${testIcon} Smoke tests: ${data.result?.summary || (data.result?.passed ? 'Passed' : 'Failed')}`);
-        break;
-
       case 'final_verification_passed':
         this._addLog('success', 'FINAL VERIFICATION PASSED');
         break;

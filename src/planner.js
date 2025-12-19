@@ -154,6 +154,14 @@ TOTAL_STEPS: [N]`;
     });
 
     this.plan = this.parsePlan(result.response, goal);
+
+    // Reset currentStep for the new plan - critical for gap plans after verification failure
+    // Without this, currentStep from a previous (larger) plan could cause isComplete()
+    // to return true immediately, skipping all execution
+    this.currentStep = 0;
+    this.completedStepNumbers = [];
+    this.inProgressSteps.clear();
+
     return this.plan;
   }
 

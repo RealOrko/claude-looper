@@ -559,10 +559,6 @@ export default function GoalProgress({ state }) {
                 <span>Confidence:</span>
                 <strong>{finalReport.finalVerification.confidence || 'Unknown'}</strong>
               </div>
-              <div className="detail-row">
-                <span>Smoke Tests:</span>
-                <strong>{finalReport.finalVerification.smokeTestsPassed ? 'Passed' : 'Failed'}</strong>
-              </div>
             </div>
           )}
 

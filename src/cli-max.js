@@ -205,16 +205,6 @@ function verboseProgress(data) {
     console.log(`  ${icon} Goal verified: ${r?.achieved ? 'Yes' : 'No'} (${r?.confidence || 'unknown'} confidence)`);
     if (r?.gaps) console.log(`    Gaps: ${r.gaps}`);
     console.log(`    Recommendation: ${r?.recommendation || 'unknown'}`);
-  } else if (data.type === 'smoke_tests_complete') {
-    const r = data.result;
-    const icon = r?.passed ? '✓' : '✗';
-    console.log(`  ${icon} Smoke tests: ${r?.summary || (r?.passed ? 'Passed' : 'Failed')}`);
-    if (r?.tests?.length > 0) {
-      r.tests.forEach(t => {
-        const tIcon = t.passed ? '✓' : '✗';
-        console.log(`      ${tIcon} ${t.name}`);
-      });
-    }
   } else if (data.type === 'final_verification_passed') {
     console.log(`  ✓ FINAL VERIFICATION PASSED`);
   } else if (data.type === 'final_verification_failed') {
@@ -316,8 +306,6 @@ function verboseComplete(report) {
     if (fv.gaps) {
       console.log(`    ⚠ Gaps: ${fv.gaps}`);
     }
-    const smokeIcon = fv.smokeTestsPassed ? '✓' : '✗';
-    console.log(`    ${smokeIcon} Smoke Tests: ${fv.smokeTestsSummary || (fv.smokeTestsPassed ? 'Passed' : 'Failed')}`);
     const overallIcon = fv.overallPassed ? '✓' : '✗';
     console.log(`    ${overallIcon} Overall: ${fv.overallPassed ? 'PASSED' : 'FAILED'}`);
   }
