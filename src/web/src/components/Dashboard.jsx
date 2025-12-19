@@ -3,6 +3,7 @@ import {
   Target, Clock, Zap, CheckCircle2, XCircle, AlertTriangle,
   Activity, Eye, TrendingUp, Layers
 } from 'lucide-react';
+import { formatDuration } from '../utils/formatters.js';
 
 export default function Dashboard({ state }) {
   const { goal, subGoals, plan, metrics, status, supervision, verification, currentStep, completedSteps, failedSteps, iteration, timeElapsed, progress } = state;
@@ -188,17 +189,3 @@ function StatCard({ icon, label, value, color }) {
   );
 }
 
-function formatDuration(ms) {
-  if (!ms) return '0:00';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`;
-  }
-  return `${seconds}s`;
-}

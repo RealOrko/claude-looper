@@ -168,8 +168,8 @@ describe('AgentWebSocketServer', () => {
       server.broadcast('progress', { type: 'initialized' });
       server.broadcast('progress', { type: 'planning' });
 
-      expect(server.eventHistory).toHaveLength(2);
-      expect(server.eventHistory[0].type).toBe('progress');
+      expect(server.eventHistory.length).toBe(2);
+      expect(server.eventHistory.events[0].type).toBe('progress');
     });
 
     it('should limit history size', async () => {
@@ -181,8 +181,8 @@ describe('AgentWebSocketServer', () => {
         server.broadcast('progress', { type: 'update', index: i });
       }
 
-      expect(server.eventHistory).toHaveLength(5);
-      expect(server.eventHistory[0].data.index).toBe(5);
+      expect(server.eventHistory.length).toBe(5);
+      expect(server.eventHistory.events[0].data.index).toBe(5);
     });
   });
 

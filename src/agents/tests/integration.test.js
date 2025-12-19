@@ -11,7 +11,7 @@
  * 7. Goal verification at completion
  */
 
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { Orchestrator } from '../orchestrator.js';
 import { PlannerAgent } from '../planner-agent.js';
 import { CoderAgent } from '../coder-agent.js';
@@ -241,6 +241,8 @@ describe('Integration: Full Orchestration Loop', () => {
   let mockClient;
   let mockGoalTracker;
   let agents;
+  // Track all orchestrators created in tests for cleanup
+  const orchestratorsToCleanup = [];
 
   beforeEach(() => {
     mockClient = createMockClient();
@@ -268,6 +270,23 @@ describe('Integration: Full Orchestration Loop', () => {
 
     // Register all agents
     orchestrator.registerAgents(agents);
+    orchestratorsToCleanup.push(orchestrator);
+  });
+
+  afterEach(() => {
+    // Clean up all orchestrators and their event listeners
+    for (const orch of orchestratorsToCleanup) {
+      if (orch) {
+        orch.removeAllListeners();
+        if (orch.messageBus) {
+          orch.messageBus.removeAllListeners();
+        }
+        if (orch.stop) {
+          orch.stop();
+        }
+      }
+    }
+    orchestratorsToCleanup.length = 0;
   });
 
   describe('Complete Workflow Simulation', () => {
@@ -453,6 +472,7 @@ COMPLETE
       });
 
       fixOrchestrator.registerAgents(fixAgents);
+      orchestratorsToCleanup.push(fixOrchestrator);
 
       const fixCycleEvents = [];
       fixOrchestrator.on('fix_cycle_started', (data) => fixCycleEvents.push({ type: 'started', ...data }));
@@ -586,6 +606,7 @@ RECOMMENDATION: continue
       });
 
       replanOrchestrator.registerAgents(replanAgents);
+      orchestratorsToCleanup.push(replanOrchestrator);
 
       const replanEvents = [];
       replanOrchestrator.on('replan_started', (data) => replanEvents.push({ type: 'started', ...data }));
@@ -708,6 +729,7 @@ COVERAGE: GOOD
       });
 
       rejectOrchestrator.registerAgents(rejectAgents);
+      orchestratorsToCleanup.push(rejectOrchestrator);
 
       await rejectOrchestrator.initialize('Verification failure test');
       const report = await rejectOrchestrator.run();
@@ -811,6 +833,7 @@ COVERAGE: GOOD
       });
 
       partialOrchestrator.registerAgents(partialAgents);
+      orchestratorsToCleanup.push(partialOrchestrator);
 
       let verificationFailed = false;
       partialOrchestrator.on('goal_verification_failed', () => {
@@ -875,6 +898,7 @@ TOTAL_STEPS: 3
       });
 
       timedOrchestrator.registerAgents(slowAgents);
+      orchestratorsToCleanup.push(timedOrchestrator);
 
       await timedOrchestrator.initialize('Time limit test');
       const report = await timedOrchestrator.run();
@@ -942,6 +966,22 @@ TOTAL_STEPS: 3
 });
 
 describe('Integration: Agent Collaboration Patterns', () => {
+  let orchestrator;
+
+  afterEach(() => {
+    // Clean up orchestrator and its event listeners
+    if (orchestrator) {
+      orchestrator.removeAllListeners();
+      if (orchestrator.messageBus) {
+        orchestrator.messageBus.removeAllListeners();
+      }
+      if (orchestrator.stop) {
+        orchestrator.stop();
+      }
+      orchestrator = null;
+    }
+  });
+
   it('should demonstrate Planner-Coder-Tester-Supervisor flow', async () => {
     const mockClient = createMockClient();
     const mockGoalTracker = createMockGoalTracker();
@@ -972,7 +1012,7 @@ describe('Integration: Agent Collaboration Patterns', () => {
       [AgentRole.SUPERVISOR]: wrapAgent(supervisor, 'Supervisor'),
     };
 
-    const orchestrator = new Orchestrator({
+    orchestrator = new Orchestrator({
       timeLimit: 30000,
       verifyAllOutputs: true,
       requireTests: false,

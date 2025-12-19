@@ -5,6 +5,7 @@ import {
   Loader2, Radio, Signal, SignalHigh, SignalLow, SignalMedium,
   Brain, Sparkles, Gauge, TrendingUp, ArrowRight
 } from 'lucide-react';
+import { formatDuration } from '../utils/formatters.js';
 
 const STATUS_CONFIG = {
   idle: { icon: CircleDot, color: '#6b7280', label: 'Idle', description: 'Waiting to start' },
@@ -359,21 +360,6 @@ function HealthCard({ icon, label, value, level, description }) {
       <div className={`health-indicator ${level}`} />
     </div>
   );
-}
-
-function formatDuration(ms) {
-  if (!ms || ms < 0) return '0:00';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`;
-  }
-  return `${seconds}s`;
 }
 
 function getTimeAgo(timestamp) {

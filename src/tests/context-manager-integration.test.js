@@ -5,6 +5,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { ContextManager } from '../context-manager.js';
+import { summarizeMessages, scoreMessageImportance } from '../context-compression.js';
 
 describe('ContextManager Integration', () => {
   let contextManager;
@@ -55,7 +56,9 @@ describe('ContextManager Integration', () => {
         contextManager.trackTokenUsage(100, 50);
       }
 
-      expect(contextManager.tokenUsage.history.length).toBeLessThanOrEqual(100);
+      // Token tracker limits history internally - verify through stats
+      const stats = contextManager.getTokenStats();
+      expect(stats.iterations).toBeLessThanOrEqual(100);
     });
   });
 
@@ -113,7 +116,8 @@ describe('ContextManager Integration', () => {
         { role: 'assistant', content: 'Error: Failed to compile' },
       ];
 
-      const summary = contextManager.summarizeMessages(history);
+      // Use the imported function directly
+      const summary = summarizeMessages(history);
 
       // Should extract step completion, file operations, and errors
       expect(summary).toContain('Completed step 1');
@@ -283,19 +287,17 @@ describe('ContextManager Integration', () => {
     });
 
     it('should use sliding window for duplicate detection', () => {
-      // Fill up the window
+      // Fill up the window (default size is 10)
       for (let i = 0; i < 15; i++) {
         contextManager.isDuplicateResponse(`Unique response ${i}`);
       }
 
-      // Old response should no longer be detected as duplicate
+      // Old response should no longer be detected as duplicate after window slides
       const oldResponse = 'Unique response 0';
       const isOldDuplicate = contextManager.isDuplicateResponse(oldResponse);
 
-      // Depends on window size, but should allow old responses
-      expect(contextManager.recentResponseHashes.length).toBeLessThanOrEqual(
-        contextManager.options.deduplicationWindow
-      );
+      // Response 0 was pushed out of the window, so it should not be detected as duplicate
+      expect(isOldDuplicate).toBe(false);
     });
   });
 
@@ -306,8 +308,9 @@ describe('ContextManager Integration', () => {
         { role: 'assistant', content: 'New message' },
       ];
 
-      const oldScore = contextManager.scoreMessageImportance(messages[0], 0, 2);
-      const newScore = contextManager.scoreMessageImportance(messages[1], 1, 2);
+      // Use imported function directly
+      const oldScore = scoreMessageImportance(messages[0], 0, 2);
+      const newScore = scoreMessageImportance(messages[1], 1, 2);
 
       expect(newScore).toBeGreaterThan(oldScore);
     });
@@ -316,8 +319,9 @@ describe('ContextManager Integration', () => {
       const regular = { role: 'assistant', content: 'Working on the task' };
       const completion = { role: 'assistant', content: 'STEP COMPLETE - finished the work' };
 
-      const regularScore = contextManager.scoreMessageImportance(regular, 0, 2);
-      const completionScore = contextManager.scoreMessageImportance(completion, 0, 2);
+      // Use imported function directly
+      const regularScore = scoreMessageImportance(regular, 0, 2);
+      const completionScore = scoreMessageImportance(completion, 0, 2);
 
       expect(completionScore).toBeGreaterThan(regularScore);
     });
@@ -326,8 +330,9 @@ describe('ContextManager Integration', () => {
       const regular = { role: 'assistant', content: 'Processing request' };
       const error = { role: 'assistant', content: 'Error: Failed to compile the code' };
 
-      const regularScore = contextManager.scoreMessageImportance(regular, 0, 2);
-      const errorScore = contextManager.scoreMessageImportance(error, 0, 2);
+      // Use imported function directly
+      const regularScore = scoreMessageImportance(regular, 0, 2);
+      const errorScore = scoreMessageImportance(error, 0, 2);
 
       expect(errorScore).toBeGreaterThan(regularScore);
     });

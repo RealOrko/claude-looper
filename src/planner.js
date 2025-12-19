@@ -9,25 +9,10 @@
  */
 
 import { StepDependencyAnalyzer } from './step-dependency-analyzer.js';
-
-// Complexity patterns for smarter initial estimation
-const COMPLEXITY_PATTERNS = {
-  simple: [
-    /^read|^check|^verify|^list|^show|^display|^log|^print/i,
-    /add.*comment|add.*log|update.*version|rename/i,
-    /simple.*change|minor.*update|quick.*fix/i,
-  ],
-  complex: [
-    /refactor|redesign|rewrite|overhaul|migrate/i,
-    /implement.*from.*scratch|build.*new|create.*system/i,
-    /integrate.*with|connect.*to.*external/i,
-    /optimize.*performance|improve.*algorithm/i,
-    /test.*coverage|comprehensive.*test/i,
-    /multiple.*files|across.*codebase/i,
-    /security|authentication|authorization/i,
-    /database.*schema|data.*migration/i,
-  ],
-};
+import { ComplexityEstimator } from './planner/complexity-estimator.js';
+import { PlanParser } from './planner/plan-parser.js';
+import { ParallelExecutor } from './planner/parallel-executor.js';
+import { SubPlanManager } from './planner/sub-plan-manager.js';
 
 export class Planner {
   constructor(client) {
@@ -35,852 +20,230 @@ export class Planner {
     this.plan = null;
     this.currentStep = 0;
 
-    // Sub-plan state (for handling blocked steps)
-    this.subPlan = null;
-    this.subPlanStep = 0;
-    this.subPlanParentStep = null; // The original step that was blocked
-    this.subPlanAttempted = false; // Track if we already tried a sub-plan for current step
-
-    // Dependency analyzer for parallel execution
     this.dependencyAnalyzer = new StepDependencyAnalyzer();
-
-    // Parallel execution state
-    this.parallelMode = false;
-    this.inProgressSteps = new Set(); // Steps currently being executed
-    this.completedStepNumbers = [];
-
-    // Complexity learning - track actual vs estimated complexity
-    this.complexityHistory = [];
+    this.complexityEstimator = new ComplexityEstimator();
+    this.planParser = new PlanParser(this.complexityEstimator, this.dependencyAnalyzer);
+    this.parallelExecutor = new ParallelExecutor(this.dependencyAnalyzer);
+    this.subPlanManager = new SubPlanManager();
   }
 
-  /**
-   * Estimate step complexity based on description patterns
-   */
-  estimateComplexity(description) {
-    const desc = description.toLowerCase();
+  // Delegation to complexity estimator
+  estimateComplexity(description) { return this.complexityEstimator.estimateComplexity(description); }
+  refineComplexity(est, desc) { return this.complexityEstimator.refineComplexity(est, desc); }
+  recordStepCompletion(step, dur) { this.complexityEstimator.recordStepCompletion(step, dur); }
+  shouldDecomposeStep(step, elapsed) { return this.complexityEstimator.shouldDecomposeStep(step, elapsed); }
 
-    // Check for complex patterns first
-    for (const pattern of COMPLEXITY_PATTERNS.complex) {
-      if (pattern.test(desc)) return 'complex';
-    }
+  // Delegation to parallel executor
+  enableParallelMode() { this.parallelExecutor.enableParallelMode(); }
+  disableParallelMode() { this.parallelExecutor.disableParallelMode(); }
+  get parallelMode() { return this.parallelExecutor.isParallelModeEnabled(); }
+  getInProgressCount() { return this.parallelExecutor.getInProgressCount(); }
+  hasInProgressSteps() { return this.parallelExecutor.hasInProgressSteps(); }
+  get completedStepNumbers() { return this.parallelExecutor.getCompletedStepNumbers(); }
+  get inProgressSteps() { return this.parallelExecutor.inProgressSteps; }
 
-    // Check for simple patterns
-    for (const pattern of COMPLEXITY_PATTERNS.simple) {
-      if (pattern.test(desc)) return 'simple';
-    }
-
-    // Default to medium
-    return 'medium';
+  markStepInProgress(stepNumber) {
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) this.parallelExecutor.markStepInProgress(step);
   }
 
-  /**
-   * Refine complexity based on historical data
-   */
-  refineComplexity(estimatedComplexity, description) {
-    if (this.complexityHistory.length < 5) {
-      return estimatedComplexity; // Not enough data
-    }
-
-    // Find similar past steps
-    const words = new Set(description.toLowerCase().split(/\s+/).filter(w => w.length > 4));
-    const similar = this.complexityHistory.filter(entry => {
-      const entryWords = new Set(entry.description.toLowerCase().split(/\s+/).filter(w => w.length > 4));
-      const overlap = [...words].filter(w => entryWords.has(w)).length;
-      return overlap >= 2; // At least 2 significant words in common
-    });
-
-    if (similar.length === 0) return estimatedComplexity;
-
-    // Calculate average actual complexity from similar steps
-    const avgDuration = similar.reduce((sum, e) => sum + e.duration, 0) / similar.length;
-
-    // Adjust based on average duration
-    if (avgDuration > 10 * 60 * 1000) return 'complex';   // > 10 min
-    if (avgDuration < 2 * 60 * 1000) return 'simple';     // < 2 min
-    return 'medium';
+  completeStepByNumber(stepNumber) {
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) this.parallelExecutor.completeStep(step);
+    this.updateCurrentStepPointer();
   }
 
-  /**
-   * Record completed step for learning
-   */
-  recordStepCompletion(step, duration) {
-    this.complexityHistory.push({
-      description: step.description,
-      estimatedComplexity: step.complexity,
-      duration,
-      timestamp: Date.now(),
-    });
-
-    // Keep only last 50 entries
-    if (this.complexityHistory.length > 50) {
-      this.complexityHistory = this.complexityHistory.slice(-50);
-    }
+  failStepByNumber(stepNumber, reason) {
+    const step = this.plan?.steps.find(s => s.number === stepNumber);
+    if (step) this.parallelExecutor.failStep(step, reason);
+    this.updateCurrentStepPointer();
   }
 
-  /**
-   * Build the planning prompt
-   * Optimized for speed and clarity
-   */
-  buildPlanningPrompt(goal, context, workingDirectory) {
-    // Use concise prompt for faster planning
-    const contextSection = context ? `Context: ${context}\n` : '';
+  // Delegation to sub-plan manager
+  isInSubPlan() { return this.subPlanManager.isInSubPlan(); }
+  canAttemptSubPlan() { return this.subPlanManager.canAttemptSubPlan(); }
+  clearSubPlan() { this.subPlanManager.clearSubPlan(); }
 
-    return `PLAN THIS GOAL: ${goal}
-${contextSection}Working dir: ${workingDirectory}
-
-Rules:
-- 3-10 concrete, actionable steps
-- Each step independently completable
-- Mark complexity: simple/medium/complex
-
-Output EXACTLY:
-ANALYSIS: [1-2 sentence analysis]
-PLAN:
-1. [Step] | [complexity]
-2. [Step] | [complexity]
-...
-TOTAL_STEPS: [N]`;
-  }
-
-  /**
-   * Generate a plan for the goal
-   */
+  /** Generate a plan for the goal */
   async createPlan(goal, context = '', workingDirectory = process.cwd()) {
-    const prompt = this.buildPlanningPrompt(goal, context, workingDirectory);
+    const prompt = this.planParser.buildPlanningPrompt(goal, context, workingDirectory);
+    const result = await this.client.sendPrompt(prompt, { newSession: true, timeout: 5 * 60 * 1000 });
 
-    const result = await this.client.sendPrompt(prompt, {
-      newSession: true,
-      timeout: 5 * 60 * 1000, // 5 minutes
-    });
-
-    this.plan = this.parsePlan(result.response, goal);
-
-    // Reset currentStep for the new plan - critical for gap plans after verification failure
-    // Without this, currentStep from a previous (larger) plan could cause isComplete()
-    // to return true immediately, skipping all execution
+    this.plan = this.planParser.parsePlan(result.response, goal);
     this.currentStep = 0;
-    this.completedStepNumbers = [];
-    this.inProgressSteps.clear();
-
+    this.parallelExecutor.reset();
     return this.plan;
   }
 
-  /**
-   * Restore a plan from saved state (for session resumption)
-   */
+  /** Restore a plan from saved state */
   restorePlan(savedPlan, currentStep = 0) {
     this.plan = savedPlan;
     this.currentStep = currentStep;
 
-    // Restore step statuses for steps that don't have one
     if (this.plan?.steps) {
       for (let i = 0; i < currentStep && i < this.plan.steps.length; i++) {
-        if (!this.plan.steps[i].status) {
-          this.plan.steps[i].status = 'completed';
-        }
+        if (!this.plan.steps[i].status) this.plan.steps[i].status = 'completed';
       }
     }
-
-    // Recalculate currentStep based on actual step statuses
-    // This ensures we resume from the first incomplete step, not a stale value
     this.updateCurrentStepPointer();
-
     return this.plan;
   }
 
-  /**
-   * Parse Claude's plan response
-   */
-  parsePlan(response, originalGoal) {
-    const plan = {
-      goal: originalGoal,
-      analysis: '',
-      steps: [],
-      totalSteps: 0,
-      raw: response,
-    };
-
-    const lines = response.split('\n');
-    let inPlanSection = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      // Extract analysis
-      if (trimmed.startsWith('ANALYSIS:')) {
-        plan.analysis = trimmed.substring('ANALYSIS:'.length).trim();
-        continue;
-      }
-
-      // Detect plan section
-      if (trimmed === 'PLAN:') {
-        inPlanSection = true;
-        continue;
-      }
-
-      // Extract total steps
-      if (trimmed.startsWith('TOTAL_STEPS:')) {
-        const match = trimmed.match(/(\d+)/);
-        if (match) {
-          plan.totalSteps = parseInt(match[1], 10);
-        }
-        inPlanSection = false;
-        continue;
-      }
-
-      // Parse plan steps
-      if (inPlanSection) {
-        const stepMatch = trimmed.match(/^(\d+)\.\s*(.+?)(?:\s*\|\s*(simple|medium|complex))?$/i);
-        if (stepMatch) {
-          const description = stepMatch[2].trim();
-          // Use smart complexity estimation if not specified
-          let complexity = stepMatch[3]?.toLowerCase();
-          if (!complexity) {
-            complexity = this.estimateComplexity(description);
-            complexity = this.refineComplexity(complexity, description);
-          }
-          plan.steps.push({
-            number: parseInt(stepMatch[1], 10),
-            description,
-            complexity,
-            status: 'pending',
-          });
-        }
-      }
-    }
-
-    // Fallback if parsing failed - try to extract numbered items
-    if (plan.steps.length === 0) {
-      const numberedItems = response.match(/^\d+\.\s*.+$/gm);
-      if (numberedItems) {
-        plan.steps = numberedItems.map((item, i) => {
-          const description = item.replace(/^\d+\.\s*/, '').replace(/\|.*$/, '').trim();
-          let complexity = this.estimateComplexity(description);
-          complexity = this.refineComplexity(complexity, description);
-          return {
-            number: i + 1,
-            description,
-            complexity,
-            status: 'pending',
-          };
-        });
-      }
-    }
-
-    plan.totalSteps = plan.steps.length;
-
-    // Analyze dependencies and add parallel execution metadata
-    if (plan.steps.length > 0) {
-      plan.steps = this.dependencyAnalyzer.analyzeDependencies(plan.steps);
-      plan.executionStats = this.dependencyAnalyzer.getExecutionStats(plan.steps);
-    }
-
-    return plan;
-  }
-
-  /**
-   * Enable parallel execution mode
-   */
-  enableParallelMode() {
-    this.parallelMode = true;
-  }
-
-  /**
-   * Disable parallel execution mode
-   */
-  disableParallelMode() {
-    this.parallelMode = false;
-  }
-
-  /**
-   * Get the next batch of steps that can be executed
-   * Returns array of steps (multiple if parallel execution enabled)
-   */
-  getNextExecutableBatch() {
-    if (!this.plan) return [];
-
-    // If in sub-plan, handle that first (no parallelization for sub-plans)
-    if (this.subPlan) {
-      const step = this.getCurrentStep();
-      return step ? [step] : [];
-    }
-
-    // Get completed step numbers
-    const completed = this.plan.steps
-      .filter(s => s.status === 'completed')
-      .map(s => s.number);
-
-    // If parallel mode disabled, return just the current step
-    if (!this.parallelMode) {
-      const step = this.getCurrentStep();
-      return step ? [step] : [];
-    }
-
-    // Get next batch of parallelizable steps
-    return this.dependencyAnalyzer.getNextParallelBatch(
-      this.plan.steps,
-      completed
-    );
-  }
-
-  /**
-   * Mark a step as in-progress (for parallel execution tracking)
-   */
-  markStepInProgress(stepNumber) {
-    this.inProgressSteps.add(stepNumber);
-    const step = this.plan?.steps.find(s => s.number === stepNumber);
-    if (step) {
-      step.status = 'in_progress';
-      step.startTime = Date.now();
-    }
-  }
-
-  /**
-   * Complete a step by number (for parallel execution)
-   */
-  completeStepByNumber(stepNumber) {
-    this.inProgressSteps.delete(stepNumber);
-    const step = this.plan?.steps.find(s => s.number === stepNumber);
-    if (step) {
-      step.status = 'completed';
-      step.endTime = Date.now();
-      step.duration = step.endTime - (step.startTime || step.endTime);
-      this.completedStepNumbers.push(stepNumber);
-    }
-
-    // Update currentStep to point to next incomplete step
-    this.updateCurrentStepPointer();
-  }
-
-  /**
-   * Fail a step by number (for parallel execution)
-   */
-  failStepByNumber(stepNumber, reason) {
-    this.inProgressSteps.delete(stepNumber);
-    const step = this.plan?.steps.find(s => s.number === stepNumber);
-    if (step) {
-      step.status = 'failed';
-      step.failReason = reason;
-      step.endTime = Date.now();
-    }
-
-    this.updateCurrentStepPointer();
-  }
-
-  /**
-   * Update the current step pointer to next incomplete step
-   */
+  /** Update the current step pointer to next incomplete step */
   updateCurrentStepPointer() {
     if (!this.plan) return;
-
     for (let i = 0; i < this.plan.steps.length; i++) {
-      const step = this.plan.steps[i];
-      if (step.status === 'pending' || step.status === 'in_progress') {
+      if (this.plan.steps[i].status === 'pending' || this.plan.steps[i].status === 'in_progress') {
         this.currentStep = i;
         return;
       }
     }
-
-    // All steps complete
     this.currentStep = this.plan.steps.length;
   }
 
-  /**
-   * Get number of steps currently in progress
-   */
-  getInProgressCount() {
-    return this.inProgressSteps.size;
+  /** Get the next batch of steps that can be executed */
+  getNextExecutableBatch() {
+    if (this.subPlanManager.isInSubPlan()) {
+      const step = this.getCurrentStep();
+      return step ? [step] : [];
+    }
+    return this.parallelExecutor.getNextExecutableBatch(this.plan, () => this.getCurrentStep());
   }
 
-  /**
-   * Check if any steps are currently in progress
-   */
-  hasInProgressSteps() {
-    return this.inProgressSteps.size > 0;
-  }
+  getExecutionStats() { return this.plan?.executionStats || null; }
 
-  /**
-   * Get execution statistics
-   */
-  getExecutionStats() {
-    return this.plan?.executionStats || null;
-  }
-
-  /**
-   * Automatically decompose complex steps into smaller subtasks
-   * Called when a step is too complex or taking too long
-   */
+  /** Automatically decompose complex steps into smaller subtasks */
   async decomposeComplexStep(step, workingDirectory) {
-    const prompt = `You are a planning assistant. Break down this complex step into smaller, more manageable subtasks.
-
-## ORIGINAL GOAL
-${this.plan.goal}
-
-## STEP TO DECOMPOSE
-Step ${step.number}: ${step.description}
-Complexity: ${step.complexity}
-
-## WORKING DIRECTORY
-${workingDirectory}
-
-## YOUR TASK
-
-This step is complex and should be broken into smaller pieces. Create 2-4 subtasks that:
-1. Are independently completable
-2. Can potentially run in parallel if they don't depend on each other
-3. Together fully accomplish the original step
-
-Output in EXACTLY this format:
-
-ANALYSIS: [Why this needs decomposition and your approach]
-
-SUBTASKS:
-1. [Subtask description] | [simple/medium]
-2. [Subtask description] | [simple/medium]
-...
-
-PARALLEL_SAFE: [YES/NO] - Can these subtasks run in parallel?`;
-
+    const prompt = this.planParser.buildDecompositionPrompt(this.plan.goal, step, workingDirectory);
     try {
-      const result = await this.client.sendPrompt(prompt, {
-        newSession: true,
-        timeout: 3 * 60 * 1000,
-      });
-
-      return this.parseDecomposition(result.response, step);
+      const result = await this.client.sendPrompt(prompt, { newSession: true, timeout: 3 * 60 * 1000 });
+      return this.planParser.parseDecomposition(result.response, step);
     } catch (error) {
       console.error('[Planner] Step decomposition failed:', error.message);
       return null;
     }
   }
 
-  /**
-   * Parse decomposition response into subtasks
-   */
-  parseDecomposition(response, parentStep) {
-    const subtasks = [];
-    const lines = response.split('\n');
-    let inSubtasksSection = false;
-    let parallelSafe = false;
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-
-      if (trimmed.startsWith('SUBTASKS:')) {
-        inSubtasksSection = true;
-        continue;
-      }
-
-      if (trimmed.startsWith('PARALLEL_SAFE:')) {
-        parallelSafe = trimmed.toUpperCase().includes('YES');
-        inSubtasksSection = false;
-        continue;
-      }
-
-      if (inSubtasksSection) {
-        const match = trimmed.match(/^(\d+)\.\s*(.+?)(?:\s*\|\s*(simple|medium))?$/i);
-        if (match) {
-          subtasks.push({
-            number: parentStep.number + (parseInt(match[1], 10) / 10), // e.g., 3.1, 3.2
-            description: match[2].trim(),
-            complexity: (match[3] || 'simple').toLowerCase(),
-            status: 'pending',
-            isSubtask: true,
-            parentStepNumber: parentStep.number,
-          });
-        }
-      }
-    }
-
-    if (subtasks.length === 0) return null;
-
-    return {
-      parentStep,
-      subtasks,
-      parallelSafe,
-      raw: response,
-    };
-  }
-
-  /**
-   * Inject decomposed subtasks into the plan
-   */
+  /** Inject decomposed subtasks into the plan */
   injectSubtasks(decomposition) {
-    if (!decomposition || !this.plan) return false;
-
-    const { parentStep, subtasks, parallelSafe } = decomposition;
-
-    // Find the parent step index
-    const parentIndex = this.plan.steps.findIndex(s => s.number === parentStep.number);
-    if (parentIndex === -1) return false;
-
-    // Mark parent as decomposed
-    this.plan.steps[parentIndex].status = 'decomposed';
-    this.plan.steps[parentIndex].decomposedInto = subtasks.map(s => s.number);
-
-    // Insert subtasks after parent
-    this.plan.steps.splice(parentIndex + 1, 0, ...subtasks);
-
-    // Update total steps
-    this.plan.totalSteps = this.plan.steps.length;
-
-    // Re-analyze dependencies if parallel safe
-    if (parallelSafe) {
-      this.plan.steps = this.dependencyAnalyzer.analyzeDependencies(this.plan.steps);
-      this.plan.executionStats = this.dependencyAnalyzer.getExecutionStats(this.plan.steps);
-    }
-
-    return true;
+    return this.parallelExecutor.injectSubtasks(this.plan, decomposition);
   }
 
-  /**
-   * Check if a step should be decomposed based on complexity and time
-   */
-  shouldDecomposeStep(step, elapsedMs = 0) {
-    // Always decompose 'complex' steps that haven't started
-    if (step.complexity === 'complex' && step.status === 'pending') {
-      return true;
-    }
-
-    // Decompose if step is taking too long (> 10 minutes for medium, > 5 for simple)
-    const thresholds = {
-      simple: 5 * 60 * 1000,
-      medium: 10 * 60 * 1000,
-      complex: 15 * 60 * 1000,
-    };
-
-    const threshold = thresholds[step.complexity] || thresholds.medium;
-    if (elapsedMs > threshold && step.status === 'in_progress') {
-      return true;
-    }
-
-    return false;
-  }
-
-  /**
-   * Get plan summary for display
-   */
-  getSummary() {
-    if (!this.plan) return 'No plan created';
-
-    const stepList = this.plan.steps
-      .map(s => {
-        const status = s.status === 'completed' ? '✓' :
-                       s.status === 'failed' ? '✗' :
-                       s.number === this.currentStep + 1 ? '→' : ' ';
-        return `${status} ${s.number}. ${s.description} [${s.complexity}]`;
-      })
-      .join('\n');
-
-    return `Goal: ${this.plan.goal}
-
-Analysis: ${this.plan.analysis}
-
-Plan (${this.plan.totalSteps} steps):
-${stepList}`;
-  }
-
-  /**
-   * Check if we're currently executing a sub-plan
-   */
-  isInSubPlan() {
-    return this.subPlan !== null;
-  }
-
-  /**
-   * Check if a sub-plan was already attempted for current step
-   */
-  canAttemptSubPlan() {
-    return !this.subPlanAttempted;
-  }
-
-  /**
-   * Create a sub-plan to work around a blocked step
-   */
+  /** Create a sub-plan to work around a blocked step */
   async createSubPlan(blockedStep, blockReason, workingDirectory) {
-    const prompt = `You are a planning assistant. A step has been blocked and needs an alternative approach.
-
-## ORIGINAL GOAL
-${this.plan.goal}
-
-## BLOCKED STEP
-Step ${blockedStep.number}: ${blockedStep.description}
-
-## BLOCK REASON
-${blockReason}
-
-## WORKING DIRECTORY
-${workingDirectory}
-
-## YOUR TASK
-
-Create an alternative approach to accomplish what the blocked step was trying to do.
-Break it down into 2-5 smaller, more specific steps that work around the blocker.
-
-Think about:
-- What alternative methods could achieve the same outcome?
-- Can we break this into smaller pieces that are less likely to fail?
-- Is there a prerequisite we missed?
-
-Output your plan in EXACTLY this format:
-
-ANALYSIS: [Brief analysis of the problem and your approach]
-
-PLAN:
-1. [Step description] | [simple/medium/complex]
-2. [Step description] | [simple/medium/complex]
-...
-
-TOTAL_STEPS: [number]
-
-Keep to 2-5 steps. Be specific and actionable.`;
-
+    const prompt = this.planParser.buildSubPlanPrompt(this.plan.goal, blockedStep, blockReason, workingDirectory);
     try {
-      const result = await this.client.sendPrompt(prompt, {
-        newSession: true,
-        timeout: 5 * 60 * 1000,
-      });
-
-      this.subPlan = this.parsePlan(result.response, `Retry: ${blockedStep.description}`);
-      this.subPlanStep = 0;
-      this.subPlanParentStep = blockedStep;
-      this.subPlanAttempted = true;
-
-      return this.subPlan;
+      const result = await this.client.sendPrompt(prompt, { newSession: true, timeout: 5 * 60 * 1000 });
+      const subPlan = this.planParser.parsePlan(result.response, `Retry: ${blockedStep.description}`);
+      this.subPlanManager.setSubPlan(subPlan, blockedStep);
+      return subPlan;
     } catch (error) {
       console.error('[Planner] Failed to create sub-plan:', error.message);
-      this.subPlanAttempted = true;
+      this.subPlanManager.markAttempted();
       return null;
     }
   }
 
-  /**
-   * Get current step (sub-plan aware)
-   */
+  /** Get current step (sub-plan aware) */
   getCurrentStep() {
-    // If in sub-plan, return sub-plan step
-    if (this.subPlan) {
-      if (this.subPlanStep >= this.subPlan.steps.length) {
-        return null;
-      }
-      const step = this.subPlan.steps[this.subPlanStep];
-      // Mark as sub-step for UI
-      return { ...step, isSubStep: true, parentStep: this.subPlanParentStep };
+    if (this.subPlanManager.isInSubPlan()) {
+      return this.subPlanManager.getCurrentSubStep();
     }
-
-    // Otherwise return main plan step
-    if (!this.plan || this.currentStep >= this.plan.steps.length) {
-      return null;
-    }
+    if (!this.plan || this.currentStep >= this.plan.steps.length) return null;
     return this.plan.steps[this.currentStep];
   }
 
-  /**
-   * Advance step (sub-plan aware)
-   */
+  /** Advance step (sub-plan aware) */
   advanceStep() {
-    if (this.subPlan) {
-      // Advance sub-plan
-      if (this.subPlanStep < this.subPlan.steps.length) {
-        this.subPlan.steps[this.subPlanStep].status = 'completed';
-        this.subPlanStep++;
-      }
-
-      // Check if sub-plan is complete
-      if (this.subPlanStep >= this.subPlan.steps.length) {
-        // Sub-plan completed - mark parent step as completed
-        if (this.subPlanParentStep && this.currentStep < this.plan.steps.length) {
-          this.plan.steps[this.currentStep].status = 'completed';
-          this.plan.steps[this.currentStep].completedViaSubPlan = true;
+    if (this.subPlanManager.isInSubPlan()) {
+      this.subPlanManager.advanceSubStep();
+      if (this.subPlanManager.isSubPlanComplete()) {
+        if (this.subPlanManager.getParentStep() && this.currentStep < this.plan.steps.length) {
+          Object.assign(this.plan.steps[this.currentStep], { status: 'completed', completedViaSubPlan: true });
           this.currentStep++;
         }
-        // Clear sub-plan state
-        this.clearSubPlan();
+        this.subPlanManager.clearSubPlan();
       }
-
       return this.getCurrentStep();
     }
-
-    // Normal step advance
     if (this.plan && this.currentStep < this.plan.steps.length) {
       this.plan.steps[this.currentStep].status = 'completed';
       this.currentStep++;
-      this.subPlanAttempted = false; // Reset for next step
+      this.subPlanManager.resetAttemptedFlag();
     }
     return this.getCurrentStep();
   }
 
-  /**
-   * Fail current step (sub-plan aware)
-   */
+  /** Fail current step (sub-plan aware) */
   failCurrentStep(reason) {
-    if (this.subPlan) {
-      // Fail sub-plan step
-      if (this.subPlanStep < this.subPlan.steps.length) {
-        this.subPlan.steps[this.subPlanStep].status = 'failed';
-        this.subPlan.steps[this.subPlanStep].failReason = reason;
-      }
-      return;
-    }
-
-    // Fail main plan step
+    if (this.subPlanManager.isInSubPlan()) return this.subPlanManager.failCurrentSubStep(reason);
     if (this.plan && this.currentStep < this.plan.steps.length) {
-      this.plan.steps[this.currentStep].status = 'failed';
-      this.plan.steps[this.currentStep].failReason = reason;
+      Object.assign(this.plan.steps[this.currentStep], { status: 'failed', failReason: reason });
     }
   }
 
-  /**
-   * Skip a step (mark as skipped and advance)
-   * Used by error recovery when a step cannot be completed
-   */
+  /** Skip a step (mark as skipped and advance) */
   skipStep(stepNumber) {
     if (!this.plan) return;
-
-    // Find and mark the step as skipped
     const step = this.plan.steps.find(s => s.number === stepNumber);
-    if (step) {
-      step.status = 'skipped';
-      step.skippedAt = Date.now();
-    }
-
-    // If this is the current step, advance
-    if (this.currentStep < this.plan.steps.length &&
-        this.plan.steps[this.currentStep].number === stepNumber) {
-      this.currentStep++;
-    }
-
+    if (step) Object.assign(step, { status: 'skipped', skippedAt: Date.now() });
+    if (this.currentStep < this.plan.steps.length && this.plan.steps[this.currentStep].number === stepNumber) this.currentStep++;
     return this.getCurrentStep();
   }
 
-  /**
-   * Abort sub-plan and mark parent step as failed
-   */
+  /** Abort sub-plan and mark parent step as failed */
   abortSubPlan(reason) {
-    if (!this.subPlan) return;
-
-    // Mark parent step as failed
-    if (this.subPlanParentStep && this.currentStep < this.plan.steps.length) {
-      this.plan.steps[this.currentStep].status = 'failed';
-      this.plan.steps[this.currentStep].failReason = `Sub-plan failed: ${reason}`;
+    if (!this.subPlanManager.isInSubPlan()) return;
+    if (this.subPlanManager.getParentStep() && this.currentStep < this.plan.steps.length) {
+      Object.assign(this.plan.steps[this.currentStep], { status: 'failed', failReason: `Sub-plan failed: ${reason}` });
       this.currentStep++;
     }
-
-    this.clearSubPlan();
+    this.subPlanManager.clearSubPlan();
   }
 
-  /**
-   * Clear sub-plan state
-   */
-  clearSubPlan() {
-    this.subPlan = null;
-    this.subPlanStep = 0;
-    this.subPlanParentStep = null;
-    // Note: subPlanAttempted is NOT cleared here - it resets on main step advance
-  }
-
-  /**
-   * Get progress info (sub-plan aware)
-   */
+  /** Get progress info (sub-plan aware) */
   getProgress() {
     if (!this.plan) return null;
-
     const completed = this.plan.steps.filter(s => s.status === 'completed').length;
     const failed = this.plan.steps.filter(s => s.status === 'failed').length;
-
-    const progress = {
-      current: this.currentStep + 1,
-      total: this.plan.totalSteps,
-      completed,
-      failed,
+    const inSubPlan = this.subPlanManager.isInSubPlan();
+    return {
+      current: this.currentStep + 1, total: this.plan.totalSteps, completed, failed,
       pending: this.plan.totalSteps - completed - failed,
-      percentComplete: Math.round((completed / this.plan.totalSteps) * 100),
-      inSubPlan: this.isInSubPlan(),
+      percentComplete: Math.round((completed / this.plan.totalSteps) * 100), inSubPlan,
+      ...(inSubPlan && { subPlan: this.subPlanManager.getSubPlanProgress() }),
     };
-
-    if (this.subPlan) {
-      progress.subPlan = {
-        current: this.subPlanStep + 1,
-        total: this.subPlan.totalSteps,
-        parentStep: this.subPlanParentStep?.number,
-      };
-    }
-
-    return progress;
   }
 
-  /**
-   * Check if complete (sub-plan aware)
-   */
+  /** Check if complete (sub-plan aware) */
   isComplete() {
-    if (this.subPlan) return false; // Still in sub-plan
+    if (this.subPlanManager.isInSubPlan()) return false;
     return this.plan && this.currentStep >= this.plan.steps.length;
   }
 
-  /**
-   * Get execution prompt (sub-plan aware)
-   */
+  /** Get plan summary for display */
+  getSummary() {
+    if (!this.plan) return 'No plan created';
+    const stepList = this.plan.steps.map(s => {
+      const status = s.status === 'completed' ? '✓' : s.status === 'failed' ? '✗' : s.number === this.currentStep + 1 ? '→' : ' ';
+      return `${status} ${s.number}. ${s.description} [${s.complexity}]`;
+    }).join('\n');
+    return `Goal: ${this.plan.goal}\n\nAnalysis: ${this.plan.analysis}\n\nPlan (${this.plan.totalSteps} steps):\n${stepList}`;
+  }
+
+  /** Get execution prompt (sub-plan aware) */
   getExecutionPrompt() {
+    if (this.subPlanManager.isInSubPlan()) return this.subPlanManager.getSubPlanExecutionPrompt();
     const step = this.getCurrentStep();
     if (!step) return null;
-
-    const progress = this.getProgress();
-
-    if (step.isSubStep) {
-      // Sub-plan execution prompt
-      const subCompleted = this.subPlan.steps
-        .filter(s => s.status === 'completed')
-        .map(s => `✓ ${s.description}`)
-        .join('\n');
-
-      return `## EXECUTING SUB-STEP ${this.subPlanStep + 1} OF ${this.subPlan.totalSteps}
-
-**Original Step:** ${this.subPlanParentStep.description}
-**Why we're retrying:** This step was blocked and we're trying an alternative approach.
-
-**Current Sub-Step:** ${step.description}
-**Complexity:** ${step.complexity}
-
-${subCompleted ? `**Completed Sub-Steps:**\n${subCompleted}\n` : ''}
-
-## INSTRUCTIONS
-
-Execute this sub-step completely. When done:
-1. Confirm what you accomplished
-2. Say "STEP COMPLETE" when finished
-3. If blocked, say "STEP BLOCKED: [reason]"
-
-Focus ONLY on this sub-step.
-
-Begin.`;
-    }
-
-    // Normal step prompt
-    const completedSteps = this.plan.steps
-      .filter(s => s.status === 'completed')
-      .map(s => `✓ ${s.description}`)
-      .join('\n');
-
+    const { pending } = this.getProgress();
+    const done = this.plan.steps.filter(s => s.status === 'completed').map(s => `✓ ${s.description}`).join('\n');
     return `## EXECUTING STEP ${step.number} OF ${this.plan.totalSteps}
+**Goal:** ${this.plan.goal}
+**Current Step:** ${step.description} [${step.complexity}]
+${done ? `**Completed:**\n${done}\n` : ''}**Remaining:** ${pending} steps
 
-**Overall Goal:** ${this.plan.goal}
-
-**Current Step:** ${step.description}
-**Complexity:** ${step.complexity}
-
-${completedSteps ? `**Completed Steps:**\n${completedSteps}\n` : ''}
-**Remaining:** ${progress.pending} steps after this one
-
-## INSTRUCTIONS
-
-Execute this step completely. When done:
-1. Confirm what you accomplished
-2. Say "STEP COMPLETE" when finished
-3. If blocked, say "STEP BLOCKED: [reason]"
-
-Focus ONLY on this step. Do not move ahead to other steps.
-
-Begin.`;
+Execute this step. Say "STEP COMPLETE" when done or "STEP BLOCKED: [reason]" if blocked. Focus ONLY on this step.`;
   }
 }
 

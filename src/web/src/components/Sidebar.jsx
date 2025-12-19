@@ -1,5 +1,6 @@
 import React from 'react';
 import { LayoutDashboard, Activity, Target, ListChecks, ScrollText, BarChart3, CheckCircle2, XCircle, Clock } from 'lucide-react';
+import { formatDurationCompact } from '../utils/formatters.js';
 
 const tabs = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, shortcut: 'Alt+1' },
@@ -58,7 +59,7 @@ export default function Sidebar({ activeTab, onTabChange, state }) {
         </div>
         <div className="stat-item">
           <Clock size={16} className="stat-icon info" />
-          <span className="stat-value">{formatDuration(state.timeElapsed || metrics?.elapsedTime || 0)}</span>
+          <span className="stat-value">{formatDurationCompact(state.timeElapsed || metrics?.elapsedTime || 0)}</span>
           <span className="stat-label">Elapsed</span>
         </div>
       </div>
@@ -90,14 +91,3 @@ export default function Sidebar({ activeTab, onTabChange, state }) {
   );
 }
 
-function formatDuration(ms) {
-  if (!ms) return '0:00';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}:${String(minutes % 60).padStart(2, '0')}:${String(seconds % 60).padStart(2, '0')}`;
-  }
-  return `${minutes}:${String(seconds % 60).padStart(2, '0')}`;
-}

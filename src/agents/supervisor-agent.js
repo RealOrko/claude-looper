@@ -21,207 +21,22 @@ import {
   AgentMessage,
   WorkflowPhase,
 } from './interfaces.js';
+import {
+  QualityGateType,
+  QualityThresholds,
+  QualityGateResult,
+} from './supervisor/quality-gates.js';
+import { ProgressMonitor } from './supervisor/progress-monitor.js';
+import {
+  EscalationLevel,
+  determineEscalation as determineEscalationLevel,
+  generateCorrection as generateCorrectionPrompt,
+} from './supervisor/escalation-logic.js';
 
-// Escalation levels
-export const EscalationLevel = {
-  NONE: 'none',
-  REMIND: 'remind',
-  CORRECT: 'correct',
-  REFOCUS: 'refocus',
-  CRITICAL: 'critical',
-  ABORT: 'abort',
-};
-
-// Quality gate types
-export const QualityGateType = {
-  PLAN_APPROVAL: 'plan_approval',
-  CODE_APPROVAL: 'code_approval',
-  STEP_COMPLETION: 'step_completion',
-  GOAL_ACHIEVEMENT: 'goal_achievement',
-};
-
-// Quality gate thresholds
-export const QualityThresholds = {
-  [QualityGateType.PLAN_APPROVAL]: 70,      // Plans need 70+ to proceed
-  [QualityGateType.CODE_APPROVAL]: 60,      // Code needs 60+ to proceed
-  [QualityGateType.STEP_COMPLETION]: 70,    // Steps need 70+ to be marked complete
-  [QualityGateType.GOAL_ACHIEVEMENT]: 80,   // Goal needs 80+ to be considered achieved
-};
-
-/**
- * Quality Gate Result - Tracks pass/fail for each gate
- */
-export class QualityGateResult {
-  constructor(gateType, targetId) {
-    this.id = `gate_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-    this.gateType = gateType;
-    this.targetId = targetId;
-    this.threshold = QualityThresholds[gateType] || 70;
-    this.score = 0;
-    this.passed = false;
-    this.issues = [];
-    this.suggestions = [];
-    this.decision = 'pending'; // pending, approved, rejected, needs_revision
-    this.reason = '';
-    this.timestamp = Date.now();
-  }
-
-  /**
-   * Evaluate the gate with a score
-   */
-  evaluate(score, issues = [], suggestions = []) {
-    this.score = score;
-    this.issues = issues;
-    this.suggestions = suggestions;
-    this.passed = score >= this.threshold;
-    this.decision = this.passed ? 'approved' : 'needs_revision';
-
-    if (score < this.threshold - 20) {
-      this.decision = 'rejected';
-    }
-  }
-
-  /**
-   * Get a summary of the gate result
-   */
-  getSummary() {
-    return {
-      gateType: this.gateType,
-      passed: this.passed,
-      score: this.score,
-      threshold: this.threshold,
-      decision: this.decision,
-      issueCount: this.issues.length,
-    };
-  }
-}
-
-/**
- * Progress Monitor - Tracks overall progress and detects stalls
- */
-export class ProgressMonitor {
-  constructor(config = {}) {
-    this.checkpoints = [];
-    this.stallThreshold = config.stallThreshold || 5 * 60 * 1000; // 5 minutes
-    this.progressScores = [];
-    this.lastProgressTime = Date.now();
-    this.stallCount = 0;
-  }
-
-  /**
-   * Record a progress checkpoint
-   */
-  recordCheckpoint(phase, metrics) {
-    const checkpoint = {
-      timestamp: Date.now(),
-      phase,
-      metrics: { ...metrics },
-      progressScore: this.calculateProgressScore(metrics),
-    };
-
-    this.checkpoints.push(checkpoint);
-    this.progressScores.push(checkpoint.progressScore);
-
-    // Detect progress
-    if (checkpoint.progressScore > 0) {
-      this.lastProgressTime = Date.now();
-      this.stallCount = 0;
-    } else {
-      this.stallCount++;
-    }
-
-    // Keep bounded
-    if (this.checkpoints.length > 100) {
-      this.checkpoints = this.checkpoints.slice(-100);
-    }
-
-    return checkpoint;
-  }
-
-  /**
-   * Calculate a progress score from metrics
-   */
-  calculateProgressScore(metrics) {
-    if (!metrics) return 0;
-
-    let score = 0;
-
-    // Completed steps = positive progress
-    if (metrics.completedSteps > 0) {
-      score += metrics.completedSteps * 10;
-    }
-
-    // Failed steps = negative progress
-    if (metrics.failedSteps > 0) {
-      score -= metrics.failedSteps * 5;
-    }
-
-    // Fix cycles = partial progress (fixing is progress)
-    if (metrics.fixCycles > 0) {
-      score += metrics.fixCycles * 2;
-    }
-
-    // Verifications passed = progress
-    if (metrics.verificationsPassed > 0) {
-      score += metrics.verificationsPassed * 3;
-    }
-
-    return score;
-  }
-
-  /**
-   * Check if we're in a stall condition
-   */
-  isStalled() {
-    const timeSinceProgress = Date.now() - this.lastProgressTime;
-    return timeSinceProgress > this.stallThreshold;
-  }
-
-  /**
-   * Get stall duration in milliseconds
-   */
-  getStallDuration() {
-    return Date.now() - this.lastProgressTime;
-  }
-
-  /**
-   * Get progress trend (improving, stable, declining)
-   */
-  getProgressTrend() {
-    if (this.progressScores.length < 3) return 'unknown';
-
-    const recent = this.progressScores.slice(-5);
-    const older = this.progressScores.slice(-10, -5);
-
-    if (older.length === 0) return 'unknown';
-
-    const recentAvg = recent.reduce((a, b) => a + b, 0) / recent.length;
-    const olderAvg = older.reduce((a, b) => a + b, 0) / older.length;
-
-    if (recentAvg > olderAvg + 2) return 'improving';
-    if (recentAvg < olderAvg - 2) return 'declining';
-    return 'stable';
-  }
-
-  /**
-   * Get progress summary
-   */
-  getSummary() {
-    const recentCheckpoints = this.checkpoints.slice(-5);
-
-    return {
-      checkpointCount: this.checkpoints.length,
-      isStalled: this.isStalled(),
-      stallDuration: this.getStallDuration(),
-      stallCount: this.stallCount,
-      trend: this.getProgressTrend(),
-      recentPhases: recentCheckpoints.map(c => c.phase),
-      averageProgressScore: this.progressScores.length > 0
-        ? Math.round(this.progressScores.reduce((a, b) => a + b, 0) / this.progressScores.length)
-        : 0,
-    };
-  }
-}
+// Re-export for backwards compatibility
+export { QualityGateType, QualityThresholds, QualityGateResult };
+export { ProgressMonitor };
+export { EscalationLevel };
 
 // Memory limits
 const MAX_VERIFICATION_HISTORY = 50;
@@ -901,71 +716,25 @@ REASON: [one sentence]`;
 
   /**
    * Determine escalation level based on assessment and history
+   * Delegates to escalation-logic module
    */
   determineEscalation(assessment) {
-    const issues = this.consecutiveIssues;
-
-    if (issues >= this.thresholds.abort) {
-      return EscalationLevel.ABORT;
-    }
-    if (issues >= this.thresholds.critical) {
-      return EscalationLevel.CRITICAL;
-    }
-    if (issues >= this.thresholds.intervene) {
-      return EscalationLevel.REFOCUS;
-    }
-    if (issues >= this.thresholds.warn) {
-      return EscalationLevel.CORRECT;
-    }
-    if (assessment.action === 'REMIND') {
-      return EscalationLevel.REMIND;
-    }
-
-    return EscalationLevel.NONE;
+    return determineEscalationLevel(assessment, this.consecutiveIssues, this.thresholds);
   }
 
   /**
    * Generate correction prompt based on escalation level
+   * Delegates to escalation-logic module and tracks corrections
    */
   generateCorrection(level, assessment, goal) {
-    switch (level) {
-      case EscalationLevel.REMIND:
-        return {
-          level,
-          prompt: `## Quick Reminder\n\n${assessment.reason}\n\n**Goal:** ${goal}\n\nContinue working.`,
-        };
+    const correction = generateCorrectionPrompt(level, assessment, goal, this.consecutiveIssues, this.thresholds);
 
-      case EscalationLevel.CORRECT:
-        this.totalCorrections++;
-        return {
-          level,
-          prompt: `## Course Correction\n\n${assessment.reason}\n\n**Your goal is:** ${goal}\n\nScore: ${assessment.score}/100\nConsecutive issues: ${this.consecutiveIssues}/${this.thresholds.abort}\n\nRefocus and take your next action toward the goal.`,
-        };
-
-      case EscalationLevel.REFOCUS:
-        this.totalCorrections++;
-        return {
-          level,
-          prompt: `## CRITICAL: REFOCUS REQUIRED\n\nYou have drifted for ${this.consecutiveIssues} consecutive responses.\n\n**STOP. Your ONLY objective is:** ${goal}\n\n1. Acknowledge this correction\n2. State what you were doing wrong\n3. List 3 steps to get back on track\n4. Execute the FIRST step immediately\n\nWARNING: Continued drift will terminate this session.`,
-        };
-
-      case EscalationLevel.CRITICAL:
-        this.totalCorrections++;
-        return {
-          level,
-          prompt: `## CRITICAL ESCALATION - FINAL WARNING\n\n⚠️ ONE MORE OFF-TRACK RESPONSE WILL TERMINATE THIS SESSION ⚠️\n\nConsecutive issues: ${this.consecutiveIssues}/${this.thresholds.abort}\n\nYou MUST immediately:\n1. STOP all current work\n2. State the EXACT goal: "${goal}"\n3. Take ONE concrete action toward that goal\n\nThis is not a suggestion.`,
-        };
-
-      case EscalationLevel.ABORT:
-        return {
-          level,
-          prompt: `## SESSION TERMINATED\n\nUnable to maintain goal focus after ${this.consecutiveIssues} consecutive issues.\n\nProvide a final summary of:\n1. What was accomplished\n2. What went wrong\n3. Recommendations for retry`,
-          shouldAbort: true,
-        };
-
-      default:
-        return null;
+    // Track corrections for non-trivial escalation levels
+    if (correction && level !== EscalationLevel.NONE && level !== EscalationLevel.REMIND) {
+      this.totalCorrections++;
     }
+
+    return correction;
   }
 
   // === Parsing Methods ===

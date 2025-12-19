@@ -18,7 +18,13 @@
       "Bash(docker run:*)",
       "Bash(ls:*)",
       "Bash(npm test:*)",
-      "Bash(rm:*)"
+      "Bash(rm:*)",
+      "Bash(find:*)",
+      "Bash(timeout 60 npm test -- --run --reporter=basic)",
+      "Bash(timeout 120 npm test -- --run)",
+      "Bash(timeout 90 npm test:*)",
+      "Bash(timeout 180 npm test -- --run)",
+      "Bash(timeout 30 npm test -- --run src/agents/tests/integration.test.js --reporter=basic)"
     ]
   }
 }

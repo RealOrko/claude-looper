@@ -5,6 +5,7 @@ import {
   FileText, Terminal, RefreshCw, GitBranch, Zap, Target, Timer,
   MessageSquare, Code, ExternalLink
 } from 'lucide-react';
+import { formatDuration, formatTime } from '../utils/formatters.js';
 
 const statusConfig = {
   completed: { icon: CheckCircle2, color: '#22c55e', label: 'Completed' },
@@ -408,27 +409,3 @@ function Section({ title, icon, expanded, onToggle, children, count, variant }) 
   );
 }
 
-function formatDuration(ms) {
-  if (!ms || ms < 0) return '0s';
-  const seconds = Math.floor(ms / 1000);
-  const minutes = Math.floor(seconds / 60);
-  const hours = Math.floor(minutes / 60);
-
-  if (hours > 0) {
-    return `${hours}h ${minutes % 60}m ${seconds % 60}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds % 60}s`;
-  }
-  return `${seconds}s`;
-}
-
-function formatTime(timestamp) {
-  if (!timestamp) return '';
-  return new Date(timestamp).toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-}

@@ -19,6 +19,9 @@ import {
   FixCycleStatus,
 } from './interfaces.js';
 
+// Note: CodeOutput is also available from './agent-result-classes.js'
+// The class is defined below for backward compatibility
+
 // Configuration
 const MAX_FIX_ATTEMPTS = 3;
 const REQUIRE_TESTS_DEFAULT = true;
