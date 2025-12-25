@@ -339,7 +339,9 @@ class AgentCore extends EventEmitter {
       throw new Error(`Task '${parentTaskId}' not found for agent '${agentName}'`);
     }
 
+    // Inherit parentGoalId from parent task so subtasks are included in plan queries
     subtask.parentTaskId = parentTaskId;
+    subtask.parentGoalId = parentTask.parentGoalId;
     const taskObj = this.addTask(agentName, subtask);
     parentTask.subtasks.push(taskObj.id);
 
@@ -594,8 +596,9 @@ class AgentCore extends EventEmitter {
 
   /**
    * Save current state to disk
+   * @param {object} extras - Additional state to persist (e.g., executor sessions)
    */
-  snapshot() {
+  snapshot(extras = {}) {
     this.ensureStateDir();
 
     const state = {
@@ -603,7 +606,8 @@ class AgentCore extends EventEmitter {
       timestamp: Date.now(),
       agents: this.agents,
       workflow: this.workflow,
-      eventLog: this.eventLog.slice(-100) // Save last 100 events
+      eventLog: this.eventLog.slice(-100), // Save last 100 events
+      ...extras
     };
 
     fs.writeFileSync(this.getStatePath(), JSON.stringify(state, null, 2));

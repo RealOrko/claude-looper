@@ -259,28 +259,64 @@ export class TerminalUI {
   }
 
   /**
-   * Update the tasks list
+   * Update the tasks list with hierarchical display
    */
   updateTasks(tasks) {
     this.tasks = tasks || [];
     if (!this.initialized) return;
 
-    // Calculate available width (subtract icon/space prefix)
     const contentWidth = this._getContentWidth(this.widgets.tasks);
-    const textWidth = Math.max(10, contentWidth - 2); // 2 chars for "icon "
-
     const lines = [];
-    for (let idx = 0; idx < this.tasks.length; idx++) {
-      const task = this.tasks[idx];
-      const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
-      const desc = task.description || `Task ${idx + 1}`;
 
-      // Wrap long descriptions
+    // Build task lookup map
+    const taskMap = new Map();
+    for (const task of this.tasks) {
+      taskMap.set(task.id, task);
+    }
+
+    // Find root tasks (no parentTaskId or parent not in list)
+    const rootTasks = this.tasks.filter(t =>
+      !t.parentTaskId || !taskMap.has(t.parentTaskId)
+    );
+
+    // Render task with hierarchy
+    const renderTask = (task, depth = 0) => {
+      const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
+      const indent = '  '.repeat(depth);
+      const tree = depth > 0 ? '└ ' : '';
+      const prefix = `${indent}${tree}${style.icon} `;
+
+      // Calculate available width for text (accounting for indent + tree + icon)
+      const prefixLen = indent.length + tree.length + 2;
+      const textWidth = Math.max(10, contentWidth - prefixLen);
+
+      const desc = task.description || 'Task';
       const wrappedLines = this._wrapText(desc, textWidth);
+
       for (let i = 0; i < wrappedLines.length; i++) {
-        const prefix = i === 0 ? `${style.icon} ` : '  '; // indent continuation lines
-        lines.push(`{${style.fg}-fg}${prefix}${wrappedLines[i]}{/${style.fg}-fg}`);
+        if (i === 0) {
+          lines.push(`{${style.fg}-fg}${prefix}${wrappedLines[i]}{/${style.fg}-fg}`);
+        } else {
+          // Continuation lines aligned with text
+          const contIndent = ' '.repeat(prefixLen);
+          lines.push(`{${style.fg}-fg}${contIndent}${wrappedLines[i]}{/${style.fg}-fg}`);
+        }
       }
+
+      // Render subtasks
+      if (task.subtasks && task.subtasks.length > 0) {
+        for (const subtaskId of task.subtasks) {
+          const subtask = taskMap.get(subtaskId);
+          if (subtask) {
+            renderTask(subtask, depth + 1);
+          }
+        }
+      }
+    };
+
+    // Render all root tasks
+    for (const task of rootTasks) {
+      renderTask(task, 0);
     }
 
     this.widgets.tasks.setContent(lines.join('\n'));

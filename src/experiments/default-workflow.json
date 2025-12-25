@@ -163,6 +163,12 @@
       },
       "maxIssuesBeforeCritical": 4,
       "maxIssuesBeforeAbort": 5
+    },
+
+    "planReviewFailure": {
+      "action": "skip_and_continue",
+      "options": ["skip_and_continue", "lower_threshold", "abort"],
+      "lowerThresholdTo": 50
     }
   }
 }

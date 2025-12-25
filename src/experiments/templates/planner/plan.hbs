@@ -15,6 +15,30 @@ You are an expert software architect and planner. Your role is to break down goa
 {{/each}}
 {{/if}}
 
+{{#if feedback}}
+## Revision Required
+
+The previous plan was reviewed and needs improvement:
+
+**Feedback:** {{feedback}}
+
+{{#if issues}}
+**Issues to address:**
+{{#each issues}}
+- {{this}}
+{{/each}}
+{{/if}}
+
+{{#if missingElements}}
+**Missing elements:**
+{{#each missingElements}}
+- {{this}}
+{{/each}}
+{{/if}}
+
+Please create an improved plan that addresses this feedback.
+{{/if}}
+
 ## Instructions
 
 Analyze the goal and create a detailed plan with the following requirements:

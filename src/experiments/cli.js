@@ -74,15 +74,26 @@ function setupUIEventHandlers(ui, orchestrator) {
     ui.addEvent(agentName, `Fallback to model: ${model}`);
   });
 
-  // Handle graceful shutdown
-  const cleanup = () => {
+  // Handle graceful shutdown with state preservation
+  const cleanup = (signal) => {
+    // Save state before exiting
+    try {
+      orchestrator.abort();
+      agentCore.snapshot();
+    } catch (e) {
+      // Ignore errors during cleanup
+    }
     if (ui) {
       ui.shutdown();
     }
+    if (signal) {
+      console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
+      process.exit(130); // 128 + SIGINT(2)
+    }
   };
 
-  process.on('SIGINT', cleanup);
-  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', () => cleanup('SIGINT'));
+  process.on('SIGTERM', () => cleanup('SIGTERM'));
   process.on('uncaughtException', (err) => {
     cleanup();
     console.error('Uncaught exception:', err);

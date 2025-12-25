@@ -9,6 +9,7 @@
  */
 
 import agentCore, { EventTypes } from './agent-core.js';
+import agentExecutor from './agent-executor.js';
 import { PlannerAgent } from './agent-planner.js';
 import { CoderAgent } from './agent-coder.js';
 import { TesterAgent } from './agent-tester.js';
@@ -216,7 +217,15 @@ export class Orchestrator {
         const approved = await this._executePlanReviewPhase(plan);
 
         if (!approved) {
-          throw new Error('Plan was not approved after maximum revisions');
+          // Handle based on data-driven config
+          const failureAction = this.config.planReviewFailure?.action || 'skip_and_continue';
+
+          if (failureAction === 'abort') {
+            throw new Error('Plan was not approved after maximum revisions');
+          } else if (failureAction === 'skip_and_continue') {
+            this._log(`[Orchestrator] Plan review failed but continuing per config (skip_and_continue)`);
+          }
+          // For 'lower_threshold', the threshold would be adjusted in supervisor config
         }
       }
 
@@ -264,6 +273,10 @@ export class Orchestrator {
 
     this.goal = state.workflow.goal;
     this.startTime = Date.now(); // Reset start time for this session
+    this.currentPhase = state.currentPhase || PHASES.EXECUTION;
+
+    // Restore executor sessions for Claude conversation continuity
+    this._restoreSessions(state);
 
     // Initialize agents if not already done
     if (Object.keys(this.agents).length === 0) {
@@ -275,6 +288,17 @@ export class Orchestrator {
     if (plannerState && this.agents.planner) {
       // Sync tasks to the planner agent
       this.agents.planner.agent.tasks = plannerState.tasks || [];
+
+      // Restore planner's currentPlan so getNextTask() works correctly
+      const goalId = plannerState.goals?.[0]?.id;
+      if (goalId) {
+        this.agents.planner.currentPlan = {
+          goalId,
+          goal: this.goal,
+          tasks: plannerState.tasks || [],
+          createdAt: state.timestamp
+        };
+      }
     }
 
     // Reset failed and in-progress tasks for retry
@@ -305,7 +329,14 @@ export class Orchestrator {
         this.currentPhase = PHASES.PLAN_REVIEW;
         const approved = await this._executePlanReviewPhase(plan);
         if (!approved) {
-          throw new Error('Plan was not approved after maximum revisions');
+          // Handle based on data-driven config
+          const failureAction = this.config.planReviewFailure?.action || 'skip_and_continue';
+
+          if (failureAction === 'abort') {
+            throw new Error('Plan was not approved after maximum revisions');
+          } else if (failureAction === 'skip_and_continue') {
+            this._log(`[Orchestrator] Plan review failed but continuing per config (skip_and_continue)`);
+          }
         }
       }
 
@@ -338,7 +369,7 @@ export class Orchestrator {
       this.status = EXECUTION_STATUS.FAILED;
       agentCore.completeWorkflow('failed', { error: error.message });
       // Save state so we can resume again
-      agentCore.snapshot();
+      this._snapshot();
       throw error;
     }
   }
@@ -363,6 +394,7 @@ export class Orchestrator {
     let approved = false;
     let revisions = 0;
     const maxRevisions = this.config.execution.maxPlanRevisions;
+    let currentPlan = plan;
 
     while (!approved && revisions < maxRevisions) {
       this._log(`[Orchestrator] Plan review attempt ${revisions + 1}/${maxRevisions}`);
@@ -373,7 +405,7 @@ export class Orchestrator {
         {
           goal: this.goal,
           task: null,
-          agentOutput: plan,
+          agentOutput: currentPlan,
           attemptNumber: revisions + 1
         }
       );
@@ -387,7 +419,14 @@ export class Orchestrator {
 
         if (revisions < maxRevisions) {
           this._log(`[Orchestrator] Plan needs revision: ${verification.feedback}`);
-          // Re-plan would happen here
+
+          // Re-create plan incorporating supervisor feedback
+          currentPlan = await this.agents.planner.createPlan(this.goal, {
+            previousPlan: currentPlan,
+            feedback: verification.feedback,
+            issues: verification.issues,
+            missingElements: verification.missingElements
+          });
         }
       }
     }
@@ -422,6 +461,9 @@ export class Orchestrator {
           await this.agents.planner.replan(task, 'Max attempts exceeded');
         }
       }
+
+      // Snapshot after each task for resumability
+      this._snapshot();
 
       // Check time budget
       if (this._isTimeBudgetExceeded()) {
@@ -578,7 +620,7 @@ export class Orchestrator {
   pause() {
     if (this.status === EXECUTION_STATUS.RUNNING) {
       this.status = EXECUTION_STATUS.PAUSED;
-      agentCore.snapshot();
+      this._snapshot();
     }
   }
 
@@ -607,8 +649,27 @@ export class Orchestrator {
    * Save state and exit
    */
   saveAndExit() {
-    agentCore.snapshot();
+    this._snapshot();
     return agentCore.getSummary();
+  }
+
+  /**
+   * Snapshot state including executor sessions for full resumability
+   */
+  _snapshot() {
+    agentCore.snapshot({
+      executorSessions: agentExecutor.sessions,
+      currentPhase: this.currentPhase
+    });
+  }
+
+  /**
+   * Restore executor sessions from loaded state
+   */
+  _restoreSessions(state) {
+    if (state.executorSessions) {
+      Object.assign(agentExecutor.sessions, state.executorSessions);
+    }
   }
 }
 
