@@ -668,7 +668,7 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Check if there's an active workflow that can be resumed
+   * Check if there's a workflow that can be resumed (active, failed, or aborted)
    */
   canResume() {
     const statePath = this.getStatePath();
@@ -677,7 +677,74 @@ class AgentCore extends EventEmitter {
     }
 
     const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-    return state.workflow && state.workflow.active;
+    if (!state.workflow) {
+      return false;
+    }
+
+    // Can resume active workflows, or failed/aborted ones
+    const resumableStatuses = ['running', 'failed', 'aborted', undefined];
+    return state.workflow.active || resumableStatuses.includes(state.workflow.status);
+  }
+
+  /**
+   * Get information about what can be resumed
+   */
+  getResumeInfo() {
+    const statePath = this.getStatePath();
+    if (!fs.existsSync(statePath)) {
+      return null;
+    }
+
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    if (!state.workflow) {
+      return null;
+    }
+
+    // Count task states from planner agent
+    const planner = state.agents?.planner;
+    const tasks = planner?.tasks || [];
+    const taskSummary = {
+      total: tasks.length,
+      completed: tasks.filter(t => t.status === 'completed').length,
+      failed: tasks.filter(t => t.status === 'failed').length,
+      pending: tasks.filter(t => t.status === 'pending').length,
+      inProgress: tasks.filter(t => t.status === 'in_progress').length
+    };
+
+    return {
+      goal: state.workflow.goal,
+      name: state.workflow.name,
+      status: state.workflow.status || (state.workflow.active ? 'running' : 'unknown'),
+      startTime: state.workflow.startTime,
+      endTime: state.workflow.endTime,
+      tasks: taskSummary,
+      canRetry: taskSummary.failed > 0 || taskSummary.inProgress > 0 || taskSummary.pending > 0
+    };
+  }
+
+  /**
+   * Reset failed and in-progress tasks for retry
+   */
+  resetFailedTasks(agentName = 'planner') {
+    const agent = this.agents[agentName];
+    if (!agent) return 0;
+
+    let resetCount = 0;
+    for (const task of agent.tasks) {
+      if (task.status === 'failed' || task.status === 'in_progress') {
+        task.status = 'pending';
+        task.attempts = 0;
+        task.updatedAt = Date.now();
+        resetCount++;
+      }
+    }
+
+    // Re-activate workflow
+    this.workflow.active = true;
+    this.workflow.status = 'running';
+    this.workflow.endTime = null;
+
+    return resetCount;
   }
 
   /**

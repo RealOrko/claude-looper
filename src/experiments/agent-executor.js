@@ -37,7 +37,7 @@ export class AgentExecutor extends EventEmitter {
       verbose: options.verbose || false,
       maxRetries: options.maxRetries ?? 3,
       retryBaseDelay: options.retryBaseDelay || 1000,
-      templatesDir: options.templatesDir || path.join(process.cwd(), 'src/experiments/templates')
+      templatesDir: options.templatesDir || path.join(process.cwd(), '.claude-looper', 'templates')
     };
 
     // Sessions per agent
@@ -159,17 +159,22 @@ export class AgentExecutor extends EventEmitter {
       this.metrics.callsByAgent[agentName] = 0;
     }
 
+    // Signal execution start
+    this.emit('start', { agentName });
+
     while (attempt <= maxRetries) {
       try {
         const result = await this._executeOnce(agentName, prompt, options);
         this.metrics.totalCalls++;
         this.metrics.callsByAgent[agentName]++;
+        this.emit('complete', { agentName, result });
         return result;
       } catch (error) {
         lastError = error;
         const category = this.categorizeError(error);
 
         if (category === 'PERMANENT') {
+          this.emit('error', { agentName, error });
           throw error;
         }
 
@@ -199,6 +204,7 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
+    this.emit('error', { agentName, error: lastError });
     throw lastError;
   }
 

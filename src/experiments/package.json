@@ -22,6 +22,7 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
+    "blessed": "^0.1.81",
     "handlebars": "^4.7.8"
   },
   "engines": {
