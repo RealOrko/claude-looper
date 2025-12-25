@@ -11,6 +11,7 @@
     "copy-state": "rm -rf ./tmp && mkdir ./tmp && cp -r ../claude-looper-2/.claude-runner/* ./tmp/",
     "start": "node src/cli-max.js",
     "test": "vitest run",
+    "experiment": "vitest run ./src/experiments/agent.test.js",
     "test:watch": "vitest",
     "test:agents": "vitest run src/agents/tests",
     "docker:build": "docker build -t claude .",

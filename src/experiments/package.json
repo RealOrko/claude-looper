@@ -1,0 +1,30 @@
+{
+  "name": "claude-looper-agents",
+  "version": "1.0.0",
+  "description": "Multi-agent framework with event-driven state management for autonomous task execution",
+  "type": "module",
+  "main": "agent-core.js",
+  "bin": {
+    "claude-looper": "./cli.js"
+  },
+  "scripts": {
+    "test": "node --test *.test.js",
+    "test:integration": "node --test integration.test.js",
+    "start": "node cli.js",
+    "example": "node example.js"
+  },
+  "keywords": [
+    "multi-agent",
+    "autonomous",
+    "claude",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "handlebars": "^4.7.8"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

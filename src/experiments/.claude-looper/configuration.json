@@ -1,0 +1,13 @@
+{
+  "default-workflow": {
+    "name": "Custom Workflow",
+    "agents": {
+      "planner": {
+        "model": "sonnet"
+      },
+      "coder": {
+        "model": "opus"
+      }
+    }
+  }
+}
