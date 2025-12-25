@@ -368,6 +368,18 @@ export class PlannerAgent {
   }
 
   /**
+   * Get the currently executing task (in_progress status)
+   */
+  getCurrentTask() {
+    if (!this.currentPlan) return null;
+
+    return this.agent.tasks.find(t =>
+      t.status === TASK_STATUS.IN_PROGRESS &&
+      t.parentGoalId === this.currentPlan.goalId
+    ) || null;
+  }
+
+  /**
    * Get the next pending task
    */
   getNextTask() {
@@ -399,6 +411,19 @@ export class PlannerAgent {
     }
 
     return null;
+  }
+
+  /**
+   * Get task execution state for UI display
+   * @returns {Object} Object with currentTaskId and nextTaskId
+   */
+  getTaskExecutionState() {
+    const current = this.getCurrentTask();
+    const next = this.getNextTask();
+    return {
+      currentTaskId: current?.id || null,
+      nextTaskId: next?.id || null
+    };
   }
 
   /**

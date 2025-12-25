@@ -11,12 +11,22 @@
 import blessed from 'blessed';
 // Note: blessed-contrib is no longer needed - using explicit positioning for alignment
 
-// Status icons and colors
+// Status icons and colors (ASCII only for terminal compatibility)
 const STATUS_STYLES = {
   pending: { icon: 'o', fg: 'gray' },
   in_progress: { icon: '*', fg: 'yellow' },
   completed: { icon: '+', fg: 'green' },
-  failed: { icon: 'x', fg: 'red' }
+  failed: { icon: 'x', fg: 'red' },
+  blocked: { icon: '-', fg: 'magenta' },
+  next: { icon: '>', fg: 'cyan' }  // Special indicator for next task
+};
+
+// Tree drawing characters (ASCII only)
+const TREE_CHARS = {
+  vertical: '|',
+  branch: '|',
+  corner: "'",
+  horizontal: '-'
 };
 
 // Phase display names
@@ -260,11 +270,16 @@ export class TerminalUI {
 
   /**
    * Update the tasks list with hierarchical display
+   * @param {Array} tasks - Array of task objects
+   * @param {Object} options - Display options
+   * @param {string} options.currentTaskId - ID of task currently being worked on
+   * @param {string} options.nextTaskId - ID of next task to be executed
    */
-  updateTasks(tasks) {
+  updateTasks(tasks, options = {}) {
     this.tasks = tasks || [];
     if (!this.initialized) return;
 
+    const { currentTaskId, nextTaskId } = options;
     const contentWidth = this._getContentWidth(this.widgets.tasks);
     const lines = [];
 
@@ -279,44 +294,104 @@ export class TerminalUI {
       !t.parentTaskId || !taskMap.has(t.parentTaskId)
     );
 
-    // Render task with hierarchy
-    const renderTask = (task, depth = 0) => {
-      const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
-      const indent = '  '.repeat(depth);
-      const tree = depth > 0 ? '└ ' : '';
-      const prefix = `${indent}${tree}${style.icon} `;
+    // Count children for each task to determine tree lines
+    const childCounts = new Map();
+    for (const task of this.tasks) {
+      childCounts.set(task.id, (task.subtasks || []).length);
+    }
 
-      // Calculate available width for text (accounting for indent + tree + icon)
-      const prefixLen = indent.length + tree.length + 2;
+    // Render task with hierarchy
+    const renderTask = (task, depth = 0, isLast = true, ancestorLines = []) => {
+      // Determine if this is the current or next task
+      const isCurrent = task.id === currentTaskId;
+      const isNext = task.id === nextTaskId && !isCurrent;
+
+      // Get appropriate style
+      let style;
+      if (isCurrent) {
+        style = STATUS_STYLES.in_progress;
+      } else if (isNext) {
+        style = STATUS_STYLES.next;
+      } else {
+        style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
+      }
+
+      // Build tree prefix
+      let treePrefix = '';
+      if (depth > 0) {
+        // Add ancestor continuation lines
+        for (let i = 0; i < ancestorLines.length; i++) {
+          treePrefix += ancestorLines[i] ? `${TREE_CHARS.vertical} ` : '  ';
+        }
+        // Add branch or corner
+        treePrefix += isLast ? `${TREE_CHARS.corner}${TREE_CHARS.horizontal}` : `${TREE_CHARS.branch}${TREE_CHARS.horizontal}`;
+      }
+
+      // Build prefix with icon
+      const icon = isCurrent ? '●' : (isNext ? '▶' : style.icon);
+      const prefix = `${treePrefix}${icon} `;
+      const prefixLen = prefix.length;
       const textWidth = Math.max(10, contentWidth - prefixLen);
 
+      // Format description
       const desc = task.description || 'Task';
       const wrappedLines = this._wrapText(desc, textWidth);
 
+      // Add status suffix for clarity
+      let statusSuffix = '';
+      if (isCurrent) {
+        statusSuffix = ' {yellow-fg}[CURRENT]{/yellow-fg}';
+      } else if (isNext) {
+        statusSuffix = ' {cyan-fg}[NEXT]{/cyan-fg}';
+      }
+
       for (let i = 0; i < wrappedLines.length; i++) {
         if (i === 0) {
-          lines.push(`{${style.fg}-fg}${prefix}${wrappedLines[i]}{/${style.fg}-fg}`);
+          lines.push(`{${style.fg}-fg}${prefix}${wrappedLines[i]}{/${style.fg}-fg}${statusSuffix}`);
         } else {
-          // Continuation lines aligned with text
-          const contIndent = ' '.repeat(prefixLen);
-          lines.push(`{${style.fg}-fg}${contIndent}${wrappedLines[i]}{/${style.fg}-fg}`);
+          // Continuation lines - maintain tree structure
+          let contPrefix = '';
+          if (depth > 0) {
+            for (let j = 0; j < ancestorLines.length; j++) {
+              contPrefix += ancestorLines[j] ? `${TREE_CHARS.vertical} ` : '  ';
+            }
+            contPrefix += '  '; // Space under branch
+          }
+          contPrefix += '  '; // Space for icon
+          lines.push(`{${style.fg}-fg}${contPrefix}${wrappedLines[i]}{/${style.fg}-fg}`);
         }
       }
 
       // Render subtasks
-      if (task.subtasks && task.subtasks.length > 0) {
-        for (const subtaskId of task.subtasks) {
-          const subtask = taskMap.get(subtaskId);
+      const subtaskIds = task.subtasks || [];
+      if (subtaskIds.length > 0) {
+        const newAncestorLines = [...ancestorLines, !isLast];
+        for (let i = 0; i < subtaskIds.length; i++) {
+          const subtask = taskMap.get(subtaskIds[i]);
           if (subtask) {
-            renderTask(subtask, depth + 1);
+            const isLastChild = i === subtaskIds.length - 1;
+            renderTask(subtask, depth + 1, isLastChild, newAncestorLines);
           }
         }
       }
     };
 
     // Render all root tasks
-    for (const task of rootTasks) {
-      renderTask(task, 0);
+    for (let i = 0; i < rootTasks.length; i++) {
+      const isLast = i === rootTasks.length - 1;
+      renderTask(rootTasks[i], 0, isLast, []);
+    }
+
+    // Add summary at bottom
+    if (this.tasks.length > 0) {
+      const completed = this.tasks.filter(t => t.status === 'completed').length;
+      const total = this.tasks.length;
+      const pending = this.tasks.filter(t => t.status === 'pending').length;
+      const inProgress = this.tasks.filter(t => t.status === 'in_progress').length;
+
+      lines.push('');
+      lines.push(`{gray-fg}${'─'.repeat(Math.min(30, contentWidth))}{/gray-fg}`);
+      lines.push(`{white-fg}${completed}/${total} complete{/white-fg} {gray-fg}│{/gray-fg} {yellow-fg}${inProgress} active{/yellow-fg} {gray-fg}│{/gray-fg} {gray-fg}${pending} pending{/gray-fg}`);
     }
 
     this.widgets.tasks.setContent(lines.join('\n'));

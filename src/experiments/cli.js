@@ -22,6 +22,20 @@ const useUI = !args.includes('--no-ui');
  * Set up UI event handlers for both execute and resume flows
  */
 function setupUIEventHandlers(ui, orchestrator) {
+  // Helper to update tasks with current/next indicators
+  const updateTasksWithState = () => {
+    const plannerAgent = agentCore.getAgent('planner');
+    if (plannerAgent) {
+      // Get execution state from planner if available
+      const planner = orchestrator.agents?.planner;
+      const execState = planner?.getTaskExecutionState?.() || {};
+      ui.updateTasks(plannerAgent.tasks, {
+        currentTaskId: execState.currentTaskId,
+        nextTaskId: execState.nextTaskId
+      });
+    }
+  };
+
   // Wire up agentCore events
   agentCore.on('*', (event) => {
     ui.addEventFromCore(event);
@@ -37,10 +51,7 @@ function setupUIEventHandlers(ui, orchestrator) {
          event.type === EventTypes.TASK_UPDATED ||
          event.type === EventTypes.TASK_COMPLETED ||
          event.type === EventTypes.TASK_FAILED)) {
-      const plannerAgent = agentCore.getAgent('planner');
-      if (plannerAgent) {
-        ui.updateTasks(plannerAgent.tasks);
-      }
+      updateTasksWithState();
     }
   });
 
@@ -167,7 +178,15 @@ async function main() {
       // Show initial tasks from saved state
       const state = agentCore.loadSnapshot();
       if (state?.agents?.planner?.tasks) {
-        ui.updateTasks(state.agents.planner.tasks);
+        // Find current and next tasks from saved state
+        const tasks = state.agents.planner.tasks;
+        const currentTask = tasks.find(t => t.status === 'in_progress');
+        const pendingTasks = tasks.filter(t => t.status === 'pending');
+        const nextTask = pendingTasks[0]; // First pending task
+        ui.updateTasks(tasks, {
+          currentTaskId: currentTask?.id,
+          nextTaskId: nextTask?.id
+        });
       }
       ui.setPhase('execution');
     }
