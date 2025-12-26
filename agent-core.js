@@ -94,16 +94,21 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Register a new agent with the core
+   * Register a new agent with the core, or get existing if already registered
    * @param {string} name - Unique agent name
    * @param {object} options - Agent configuration
    * @param {string} options.model - Claude model to use (opus, sonnet, haiku)
    * @param {object} options.state - Initial custom state
    * @param {string[]} options.subscribesTo - Agent names to subscribe to
    * @param {object[]} options.tools - Tool definitions for this agent
+   * @param {boolean} options.allowExisting - If true, return existing agent instead of throwing
    */
   registerAgent(name, options = {}) {
     if (this.agents[name]) {
+      if (options.allowExisting) {
+        // Return existing agent for resume scenarios
+        return this.agents[name];
+      }
       throw new Error(`Agent '${name}' is already registered`);
     }
 

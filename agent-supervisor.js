@@ -79,7 +79,7 @@ export class SupervisorAgent {
     this.model = options.model || 'opus';
     this.fallbackModel = options.fallbackModel || 'sonnet';
 
-    // Register with agent core
+    // Register with agent core (allowExisting for resume scenarios)
     this.agent = agentCore.registerAgent(this.name, {
       model: this.model,
       subscribesTo: options.subscribesTo || ['planner', 'coder', 'tester'],
@@ -89,7 +89,8 @@ export class SupervisorAgent {
         approvalsGiven: 0,
         rejectionsGiven: 0,
         escalationCount: 0
-      }
+      },
+      allowExisting: options.allowExisting || false
     });
 
     // Subscribe to other agents' events

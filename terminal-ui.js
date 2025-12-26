@@ -148,7 +148,7 @@ export class TerminalUI {
         label: { fg: 'cyan', bold: true }
       },
       border: { type: 'line' },
-      content: ''
+      content: '{gray-fg}Waiting for agent...{/gray-fg}'
     });
     this.agentLines = [];
 
@@ -482,24 +482,28 @@ export class TerminalUI {
 
     switch (entry.type) {
       case 'text':
-        // Word wrap long text
-        const lines = this._wrapText(entry.content, contentWidth);
-        for (const line of lines) {
-          this.agentLines.push(line);
+        // Sanitize and word wrap text
+        const cleanText = this._sanitizeText(entry.content);
+        if (cleanText) {
+          const lines = this._wrapText(cleanText, contentWidth);
+          for (const line of lines) {
+            this.agentLines.push(line);
+          }
         }
         break;
 
       case 'tool':
-        this._addAgentSeparator(`Tool: ${entry.name}`);
+        this._addAgentSeparator(`Tool: ${this._sanitizeText(entry.name)}`);
         if (entry.input) {
           const inputStr = typeof entry.input === 'string'
             ? entry.input
             : JSON.stringify(entry.input, null, 2);
-          // Show truncated input for readability
+          // Sanitize and show truncated input for readability
+          const cleanInput = this._sanitizeText(inputStr);
           const maxLen = contentWidth * 3; // ~3 lines worth
-          const preview = inputStr.length > maxLen
-            ? inputStr.substring(0, maxLen) + '...'
-            : inputStr;
+          const preview = cleanInput.length > maxLen
+            ? cleanInput.substring(0, maxLen) + '...'
+            : cleanInput;
           for (const line of preview.split('\n').slice(0, 8)) {
             this.agentLines.push(`  {gray-fg}${this._truncate(line, contentWidth - 2)}{/gray-fg}`);
           }
@@ -510,26 +514,31 @@ export class TerminalUI {
         const resultStr = typeof entry.content === 'string'
           ? entry.content
           : JSON.stringify(entry.content);
+        const cleanResult = this._sanitizeText(resultStr);
         const maxResultLen = contentWidth - 5; // account for "  → " prefix
-        const resultPreview = this._truncate(resultStr, maxResultLen);
+        const resultPreview = this._truncate(cleanResult, maxResultLen);
         this.agentLines.push(`  {green-fg}→ ${resultPreview}{/green-fg}`);
         break;
 
       case 'result':
         this._addAgentSeparator('Result');
-        const resultLines = this._wrapText(entry.content, contentWidth);
-        for (const line of resultLines) {
-          this.agentLines.push(`{white-fg}${line}{/white-fg}`);
+        const cleanResultText = this._sanitizeText(entry.content);
+        if (cleanResultText) {
+          const resultLines = this._wrapText(cleanResultText, contentWidth);
+          for (const line of resultLines) {
+            this.agentLines.push(`{white-fg}${line}{/white-fg}`);
+          }
         }
         break;
 
       case 'event':
-        this.agentLines.push(`{gray-fg}[${this._truncate(entry.content, contentWidth - 2)}]{/gray-fg}`);
+        const cleanEvent = this._sanitizeText(entry.content);
+        this.agentLines.push(`{gray-fg}[${this._truncate(cleanEvent, contentWidth - 2)}]{/gray-fg}`);
         break;
 
       case 'raw':
         // Clean up raw output and wrap to fit
-        const clean = entry.content.replace(/[\x00-\x1F\x7F]/g, '').trim();
+        const clean = this._sanitizeText(entry.content).trim();
         if (clean) {
           const wrappedRaw = this._wrapText(clean, contentWidth);
           for (const line of wrappedRaw.slice(0, 10)) { // limit to 10 lines
@@ -584,6 +593,59 @@ export class TerminalUI {
   }
 
   /**
+   * Sanitize text by removing control characters that can cause garbled output
+   */
+  _sanitizeText(text) {
+    if (!text) return '';
+    // Remove control characters except newlines and tabs, and remove ANSI escape sequences
+    return text
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '')  // Remove ANSI escape sequences
+      .replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g, '');  // Remove control chars except \t \n \r
+  }
+
+  /**
+   * Show the prompt being sent to an agent
+   */
+  showAgentPrompt(agentName, prompt) {
+    if (!this.initialized) return;
+
+    // Update label and reset if agent changed
+    if (agentName !== this.currentAgent) {
+      this.currentAgent = agentName;
+      this.agentLines = [];
+      this.jsonBuffer = '';
+      this.widgets.agent.setLabel(` Agent: ${agentName} `);
+    }
+
+    const contentWidth = this._getContentWidth(this.widgets.agent);
+
+    // Add prompt section
+    this._addAgentSeparator(`Prompt → ${agentName}`);
+
+    // Sanitize and display prompt (truncated for readability)
+    const cleanPrompt = this._sanitizeText(prompt);
+    const maxPromptLines = 15;  // Limit prompt display to avoid overwhelming the panel
+    const promptLines = this._wrapText(cleanPrompt, contentWidth);
+    const displayLines = promptLines.slice(0, maxPromptLines);
+
+    for (const line of displayLines) {
+      this.agentLines.push(`{gray-fg}${line}{/gray-fg}`);
+    }
+
+    if (promptLines.length > maxPromptLines) {
+      this.agentLines.push(`{gray-fg}  ... (${promptLines.length - maxPromptLines} more lines){/gray-fg}`);
+    }
+
+    // Add separator before response
+    this.agentLines.push('');
+    this._addAgentSeparator('Response');
+
+    this.widgets.agent.setContent(this.agentLines.join('\n'));
+    this.widgets.agent.setScrollPerc(100);
+    this.screen.render();
+  }
+
+  /**
    * Update the agent panel with new output
    */
   updateAgentPanel(agentName, output) {
@@ -635,7 +697,8 @@ export class TerminalUI {
 
     this.agentLines = [];
     this.jsonBuffer = '';
-    this.widgets.agent.setContent('');
+    // Set placeholder content to avoid empty panel rendering issues
+    this.widgets.agent.setContent('{gray-fg}Waiting for agent...{/gray-fg}');
     this.widgets.agent.setLabel(' Agent Output ');
     this.currentAgent = null;
     this.screen.render();

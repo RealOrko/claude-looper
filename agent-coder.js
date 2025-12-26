@@ -63,7 +63,7 @@ export class CoderAgent {
     this.model = options.model || 'opus';
     this.fallbackModel = options.fallbackModel || 'sonnet';
 
-    // Register with agent core
+    // Register with agent core (allowExisting for resume scenarios)
     this.agent = agentCore.registerAgent(this.name, {
       model: this.model,
       subscribesTo: options.subscribesTo || ['supervisor', 'planner'],
@@ -74,7 +74,8 @@ export class CoderAgent {
         linesOfCode: 0,
         testsWritten: 0,
         blockedCount: 0
-      }
+      },
+      allowExisting: options.allowExisting || false
     });
 
     // Set up subscriptions

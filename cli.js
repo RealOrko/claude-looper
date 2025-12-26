@@ -149,9 +149,13 @@ async function startMain() {
       ui.updateAgentPanel(agentName, chunk);
     });
 
-    // Show busy spinner when agents are executing
-    agentExecutor.on('start', () => {
+    // Show busy spinner when agents are executing and display the prompt
+    agentExecutor.on('start', ({ agentName, prompt }) => {
       ui.setBusy(true);
+      // Display the prompt being sent to the agent
+      if (prompt) {
+        ui.showAgentPrompt(agentName, prompt);
+      }
     });
 
     agentExecutor.on('complete', () => {

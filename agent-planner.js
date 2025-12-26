@@ -65,7 +65,7 @@ export class PlannerAgent {
     // Current plan state
     this.currentPlan = null;
 
-    // Register with agent core
+    // Register with agent core (allowExisting for resume scenarios)
     this.agent = agentCore.registerAgent(this.name, {
       model: this.model,
       subscribesTo: options.subscribesTo || ['supervisor', 'coder', 'tester'],
@@ -75,7 +75,8 @@ export class PlannerAgent {
         replansPerformed: 0,
         tasksTracked: 0,
         successRate: 0
-      }
+      },
+      allowExisting: options.allowExisting || false
     });
 
     // Set up subscriptions

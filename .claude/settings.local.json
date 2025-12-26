@@ -15,7 +15,8 @@
       "Bash(timeout 5 node:*)",
       "Bash(git restore:*)",
       "Bash(git checkout:*)",
-      "Bash(ls:*)"
+      "Bash(ls:*)",
+      "Bash(npm test:*)"
     ]
   }
 }

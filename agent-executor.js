@@ -159,8 +159,8 @@ export class AgentExecutor extends EventEmitter {
       this.metrics.callsByAgent[agentName] = 0;
     }
 
-    // Signal execution start
-    this.emit('start', { agentName });
+    // Signal execution start with the prompt
+    this.emit('start', { agentName, prompt });
 
     while (attempt <= maxRetries) {
       try {

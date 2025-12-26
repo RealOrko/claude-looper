@@ -152,8 +152,9 @@ export class Orchestrator {
 
   /**
    * Initialize all agents from configuration
+   * @param {boolean} allowExisting - If true, allow using existing agents (for resume)
    */
-  initializeAgents() {
+  initializeAgents(allowExisting = false) {
     if (!this.config) {
       this.loadConfiguration();
     }
@@ -164,28 +165,39 @@ export class Orchestrator {
     this.agents.supervisor = new SupervisorAgent({
       model: agentConfigs.supervisor.model,
       fallbackModel: agentConfigs.supervisor.fallbackModel,
-      subscribesTo: agentConfigs.supervisor.subscribesTo
+      subscribesTo: agentConfigs.supervisor.subscribesTo,
+      allowExisting
     });
 
     this.agents.planner = new PlannerAgent({
       model: agentConfigs.planner.model,
       fallbackModel: agentConfigs.planner.fallbackModel,
-      subscribesTo: agentConfigs.planner.subscribesTo
+      subscribesTo: agentConfigs.planner.subscribesTo,
+      allowExisting
     });
 
     this.agents.coder = new CoderAgent({
       model: agentConfigs.coder.model,
       fallbackModel: agentConfigs.coder.fallbackModel,
-      subscribesTo: agentConfigs.coder.subscribesTo
+      subscribesTo: agentConfigs.coder.subscribesTo,
+      allowExisting
     });
 
     this.agents.tester = new TesterAgent({
       model: agentConfigs.tester.model,
       fallbackModel: agentConfigs.tester.fallbackModel,
-      subscribesTo: agentConfigs.tester.subscribesTo
+      subscribesTo: agentConfigs.tester.subscribesTo,
+      allowExisting
     });
 
     return this.agents;
+  }
+
+  /**
+   * Initialize agents for resume - allows existing registered agents
+   */
+  _initializeAgentsForResume() {
+    return this.initializeAgents(true);
   }
 
   /**
@@ -265,7 +277,10 @@ export class Orchestrator {
    * Loads saved state, resets failed tasks, and continues execution
    */
   async resumeExecution() {
-    // Load saved state
+    // Load configuration first (needed for execution settings)
+    this.loadConfiguration();
+
+    // Load saved state (this restores agentCore.agents)
     const state = agentCore.loadSnapshot();
     if (!state) {
       throw new Error('No saved state to resume from');
@@ -278,42 +293,46 @@ export class Orchestrator {
     // Restore executor sessions for Claude conversation continuity
     this._restoreSessions(state);
 
-    // Initialize agents if not already done
-    if (Object.keys(this.agents).length === 0) {
-      this.initializeAgents();
-    }
+    // Initialize agents - need to handle already-registered agents
+    this._initializeAgentsForResume();
 
-    // Restore planner tasks from saved state
+    // Restore planner tasks and currentPlan from saved state
     const plannerState = state.agents?.planner;
     if (plannerState && this.agents.planner) {
-      // Sync tasks to the planner agent
-      this.agents.planner.agent.tasks = plannerState.tasks || [];
+      // The agent.tasks reference already points to agentCore.agents['planner'].tasks
+      // which was restored by loadSnapshot(), so we just need to set currentPlan
 
-      // Restore planner's currentPlan so getNextTask() works correctly
-      const goalId = plannerState.goals?.[0]?.id;
-      if (goalId) {
+      // Find the goal - prefer active goal, fall back to first goal
+      const activeGoal = plannerState.goals?.find(g => g.status === 'active');
+      const goal = activeGoal || plannerState.goals?.[0];
+
+      if (goal) {
         this.agents.planner.currentPlan = {
-          goalId,
+          goalId: goal.id,
           goal: this.goal,
           tasks: plannerState.tasks || [],
           createdAt: state.timestamp
         };
+        this._log(`[Orchestrator] Restored plan with goalId: ${goal.id}`);
+      } else if (plannerState.tasks?.length > 0) {
+        // No goal found but we have tasks - use the first task's parentGoalId
+        const firstTask = plannerState.tasks[0];
+        const goalId = firstTask?.parentGoalId || `goal-resumed-${Date.now()}`;
+        this.agents.planner.currentPlan = {
+          goalId,
+          goal: this.goal,
+          tasks: plannerState.tasks,
+          createdAt: state.timestamp
+        };
+        this._log(`[Orchestrator] Restored plan using task's parentGoalId: ${goalId}`);
+      } else {
+        this._log(`[Orchestrator] Warning: No goals or tasks found in saved state`);
       }
     }
 
     // Reset failed and in-progress tasks for retry
     const resetCount = agentCore.resetFailedTasks('planner');
     this._log(`[Orchestrator] Reset ${resetCount} failed/in-progress tasks for retry`);
-
-    // Also reset in the planner agent instance
-    if (this.agents.planner) {
-      for (const task of this.agents.planner.agent.tasks) {
-        if (task.status === 'failed' || task.status === 'in_progress') {
-          task.status = 'pending';
-          task.attempts = 0;
-        }
-      }
-    }
 
     this.status = EXECUTION_STATUS.RUNNING;
 
