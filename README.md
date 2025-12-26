@@ -1,355 +1,95 @@
-# 🤖 Claude Autonomous Runner
+# 🔄 Claude Looper
 
-🚀 Run Claude in continuous autonomous mode with intelligent planning, LLM-based supervision, and multi-layer verification. 🎯
+> Multi-agent framework for autonomous software development using Claude
 
 ## ✨ Features
 
-- 🧠 **Intelligent Planning**: Opus-powered planner breaks down goals into executable steps
-- 🔄 **Autonomous Execution**: Claude works continuously without user input
-- 👁️ **LLM Supervision**: Sonnet-powered supervisor monitors progress and corrects drift
-- ✅ **Step Verification**: Each step completion is verified before advancing
-- 🔀 **Sub-plan Retry**: Blocked steps trigger alternative approach planning
-- 🎯 **Final Verification**: Goal achievement verified before completion
-- 🐳 **Docker Support**: Run in isolated container with credential mounting
-- 💾 **State Persistence**: Save and resume sessions across restarts
-- 🌐 **Web UI**: Real-time visualization dashboard for monitoring progress
-- 🔁 **Retry Mode**: Automatically retry until HIGH confidence is achieved
+- 🤖 **Four Specialized Agents** - Planner, Coder, Tester, Supervisor working in concert
+- 📡 **Event-Driven Architecture** - Agents communicate via state changes and events
+- 💾 **Persistent State** - Snapshot and resume workflows anytime
+- 🖥️ **Terminal UI** - Real-time progress visualization
+- ⚙️ **Configurable Workflows** - JSON-based agent configuration
 
-## 📦 Installation
-
-⚡ Requires [Claude Code CLI](https://github.com/anthropics/claude-code) and an active Claude Max subscription.
+## 🚀 Quick Start
 
 ```bash
-# Clone the repository
-git clone https://github.com/RealOrko/claude-looper.git
-cd claude-looper
-
 # Install dependencies
 npm install
 
-# Install globally
+# Run with a goal
+node cli.js "Add user authentication to the app"
+
+# Or install globally
 npm link
+claude-looper "Your goal here"
 ```
 
-## 🚀 Usage
+## 📋 Commands
 
 ```bash
-# Basic usage
-claude-auto "Build a REST API for user management"
-
-# With sub-goals and time limit
-claude-auto -g "Build a todo app" \
-  -s "Create the data model" \
-  -s "Implement CRUD endpoints" \
-  -s "Add authentication" \
-  -t 4h
-
-# With additional context
-claude-auto "Fix the failing tests" -c "Focus on auth module" -t 1h
-
-# Run in Docker container (recommended)
-claude-auto --docker "Build a REST API" -t 4h
-
-# Verbose mode (shows Claude's full output)
-claude-auto -v "Refactor the codebase"
-
-# Retry until HIGH confidence achieved
-claude-auto -r --max-retries 5 -t 4h "Build and test a REST API"
-
-# Enable web UI for visualization
-claude-auto --ui "Build a REST API"
-
-# Web UI on custom port
-claude-auto --ui --ui-port 8080 "Build a REST API"
-
-# Resume a previous session (interactive selection)
-claude-auto --resume
-
-# Resume a specific session by ID
-claude-auto --resume mjbxfnxx_b4c8b44c715c
-
-# List all available sessions
-claude-auto --list-sessions
+claude-looper "goal"      # Start new workflow
+claude-looper --resume    # Resume interrupted workflow
+claude-looper --status    # Check saved state
+claude-looper --no-ui "goal"  # Run without terminal UI
 ```
-
-## 🐳 Docker Support
-
-Run in an isolated container with your credentials automatically mounted:
-
-```bash
-# Build the Docker image (once)
-npm run docker:build
-
-# Run with --docker flag
-claude-auto --docker "Your goal here" -t 4h
-```
-
-The container:
-- 📁 Mounts your current directory to `/home/claude/workspace`
-- 🔑 Mounts `~/.claude` for authentication
-- 🛠️ Includes Python 3.12, Go 1.22, Node.js 20, and build tools
-
-## 💾 State Persistence & Resume
-
-Sessions are automatically saved and can be resumed if interrupted:
-
-```bash
-# List all saved sessions
-claude-auto --list-sessions
-
-# Resume interactively (shows session picker)
-claude-auto --resume
-
-# Resume a specific session by ID
-claude-auto --resume abc123_def456
-```
-
-Session state includes:
-- 📋 Current plan and step progress
-- 💬 Conversation history
-- ⏱️ Time remaining
-- 📊 Metrics and verification results
-
-Sessions are stored in `.claude-runner/` by default (configurable with `--state-dir`).
-
-## 🌐 Web UI
-
-Real-time visualization dashboard for monitoring autonomous execution:
-
-```bash
-# Enable web UI (default port 3000)
-claude-auto --ui "Build a REST API"
-
-# Custom port
-claude-auto --ui --ui-port 8080 "Build a REST API"
-```
-
-The web UI shows:
-- 📊 Real-time progress and step status
-- 💬 Live output from Claude
-- 👁️ Supervision events and corrections
-- 📈 Performance metrics
-
-## 🔁 Retry Mode
-
-Automatically retry execution until HIGH confidence is achieved:
-
-```bash
-# Retry up to 5 times
-claude-auto -r --max-retries 5 "Build and test a REST API"
-
-# Default: up to 100 retries
-claude-auto -r "Implement feature X"
-```
-
-Each retry:
-- 🔄 Restarts with fresh context
-- 📋 Re-plans based on previous attempt
-- ✅ Continues until HIGH confidence or max retries reached
-
-## ⚙️ CLI Options
-
-| Option | Short | Description | Default |
-|--------|-------|-------------|---------|
-| `--goal` | `-g` | Primary goal | - |
-| `--sub-goal` | `-s` | Sub-goal (repeatable) | - |
-| `--time-limit` | `-t` | Time limit (30m, 2h, 24h) | 2h |
-| `--directory` | `-d` | Working directory | cwd |
-| `--context` | `-c` | Additional context | - |
-| `--verbose` | `-v` | Show full output | false |
-| `--quiet` | `-q` | Minimal output | false |
-| `--json` | `-j` | JSON output | false |
-| `--docker` | - | Run in Docker container | false |
-| `--retry` | `-r` | Enable retry loop (until HIGH confidence) | false |
-| `--max-retries` | - | Maximum retry attempts | 100 |
-| `--resume` | `-R` | Resume a previous session | - |
-| `--list-sessions` | - | List all available sessions | - |
-| `--state-dir` | - | Directory for session state | .claude-runner |
-| `--ui` | - | Enable web UI for visualization | false |
-| `--ui-port` | - | Port for web UI | 3000 |
-
-## 🔄 How It Works
-
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│  1. 📋 Planning: Opus analyzes goal and creates execution steps     │
-│  2. 🔍 Plan Review: Supervisor validates plan before execution      │
-│  3. ⚡ Execution: Worker Claude executes steps autonomously         │
-│  4. ✅ Step Verification: Each "STEP COMPLETE" claim is verified    │
-│  5. 👁️ Supervision: Sonnet monitors progress, corrects drift        │
-│  6. 🔀 Sub-plan Retry: Blocked steps trigger alternative approaches │
-│  7. 🎯 Final Verification: Goal achievement verified                 │
-│  8. 🏁 Complete: Verified success, time expired, or aborted         │
-└─────────────────────────────────────────────────────────────────────┘
-```
-
-## 🧠 Model Configuration
-
-| Component | Model | Purpose |
-|-----------|-------|---------|
-| 📋 Planner | Opus | Creates execution plan from goal |
-| ⚡ Worker | Opus | Executes steps autonomously |
-| 👁️ Supervisor | Sonnet | Monitors progress, issues corrections |
-| ✅ Step Verification | Sonnet | Validates step completion claims |
-| 🔍 Plan Review | Sonnet | Validates plan before execution |
-| 🎯 Goal Verification | Sonnet | Final goal achievement check |
-
-## 🚨 Supervision & Escalation
-
-The supervisor scores each response (0-100) for goal alignment and escalates when drift is detected:
-
-| Level | Trigger | Action |
-|-------|---------|--------|
-| ✅ CONTINUE | Score 70+ | No intervention |
-| 💭 REMIND | Score 50-69 | Gentle nudge |
-| ⚠️ CORRECT | Score 30-49 or 2+ issues | Clear redirection |
-| 🔄 REFOCUS | Score <30 or 3+ issues | Hard intervention |
-| 🚨 CRITICAL | 4+ consecutive issues | Final warning |
-| ❌ ABORT | 5+ consecutive issues | Session terminated |
-
-## 🔐 Verification Layers
-
-### ✅ Step Verification
-When Claude claims "STEP COMPLETE", the supervisor verifies:
-- 🔨 Concrete actions were taken (not just planning)
-- 📄 Evidence the step's objective was achieved
-- 📊 Actual output, file changes, or results
-
-### 🔍 Completion Verification
-When all steps complete, a 3-layer verification validates the claim:
-
-1. 🧠 **LLM Challenge**: Claude must provide concrete evidence (files, code, commands)
-2. 📁 **Artifact Inspection**: Verifies claimed files exist and aren't empty
-3. 🧪 **Test Validation**: Runs test/build commands to validate the work
-
-### 🎯 Final Goal Verification
-After step completion, additional verification ensures:
-- ✅ Original goal was achieved (not just steps completed)
-- ⚡ Result is functional and complete
-
-## 🔀 Sub-plan Retry
-
-When a step is blocked, the planner creates an alternative approach:
-
-```
-❌ Step 3 blocked: "Cannot install dependency X"
-  → 📋 Creating sub-plan with 3 alternative sub-steps
-  → 1️⃣ Sub-step 1: Try alternative package Y
-  → 2️⃣ Sub-step 2: Build from source
-  → 3️⃣ Sub-step 3: Use Docker container
-```
-
-If the sub-plan also fails, the step is marked failed and execution continues. 💪
 
 ## 🏗️ Architecture
 
 ```
-src/
-├── cli-max.js               # 🚀 CLI entry point
-├── autonomous-runner-cli.js # 🔄 Main execution loop
-├── claude-code-client.js    # 🔌 Claude Code subprocess wrapper
-├── supervisor.js            # 👁️ LLM-based assessment & escalation
-├── completion-verifier.js   # ✅ Multi-layer verification system
-├── planner.js               # 📋 Goal decomposition & sub-plans
-├── goal-tracker.js          # 📊 Progress tracking
-├── phase-manager.js         # ⏱️ Time & phase management
-├── config.js                # ⚙️ Configuration
-├── index.js                 # 📦 Module exports
-├── retryable-runner.js      # 🔁 Retry loop wrapper
-├── state-persistence.js     # 💾 Session save/restore
-├── context-manager.js       # 📝 Context window management
-├── error-recovery.js        # 🛠️ Error handling & recovery
-├── performance-metrics.js   # 📈 Performance tracking
-├── step-dependency-analyzer.js # 🔗 Step dependency analysis
-├── utils.js                 # 🧰 Utility functions
-├── ui/
-│   ├── ink-dashboard.js     # 🎨 React-based terminal UI
-│   ├── websocket-server.js  # 🌐 WebSocket server for web UI
-│   ├── dashboard.js         # 📺 Alternative dashboard
-│   ├── terminal.js          # 🖥️ Terminal utilities
-│   └── components.js        # 🧩 UI components
-├── web/                     # 🌐 Web UI (React/Vite)
-│   ├── src/
-│   │   ├── App.jsx          # Main application
-│   │   └── components/      # React components
-│   └── ...
-└── agents/                  # 🤖 Multi-agent architecture
-    ├── orchestrator.js      # 🎭 Agent coordinator
-    ├── planner-agent.js     # 📋 Planning agent
-    ├── coder-agent.js       # 💻 Code execution agent
-    ├── supervisor-agent.js  # 👁️ Supervision agent
-    ├── tester-agent.js      # 🧪 Testing agent
-    ├── message-bus.js       # 📨 Inter-agent messaging
-    └── interfaces.js        # 📜 Agent interfaces
+┌─────────────┐     ┌─────────────┐
+│   Planner   │────▶│    Coder    │
+└─────────────┘     └─────────────┘
+       │                   │
+       ▼                   ▼
+┌─────────────┐     ┌─────────────┐
+│  Supervisor │◀────│   Tester    │
+└─────────────┘     └─────────────┘
+```
+
+| Agent | Role | Model |
+|-------|------|-------|
+| 📝 Planner | Breaks goals into tasks | Sonnet |
+| 💻 Coder | Implements tasks | Opus |
+| 🧪 Tester | Validates implementations | Opus |
+| 👁️ Supervisor | Reviews and approves work | Opus |
+
+## 📁 Project Structure
+
+```
+├── cli.js              # CLI entry point
+├── agent-core.js       # Event-driven state management
+├── agent-executor.js   # Claude CLI execution
+├── agent-planner.js    # Task planning
+├── agent-coder.js      # Implementation
+├── agent-tester.js     # Testing
+├── agent-supervisor.js # Quality verification
+├── orchestrator.js     # Workflow coordination
+├── terminal-ui.js      # Blessed-based UI
+└── templates/          # Handlebars prompt templates
 ```
 
 ## ⚙️ Configuration
 
-Key settings in `src/config.js`:
+Workflows are configured in `.claude-looper/configuration.json`:
 
-```javascript
+```json
 {
-  // 🚨 Escalation thresholds (consecutive issues to trigger)
-  escalationThresholds: {
-    warn: 2,      // CORRECT
-    intervene: 3, // REFOCUS
-    critical: 4,  // Final warning
-    abort: 5,     // Terminate
-  },
-
-  // ✅ Completion verification
-  verification: {
-    enabled: true,
-    maxAttempts: 3,        // Max false claims before escalation
-    requireArtifacts: true,
-    runTests: true,
-  },
-
-  // ⏱️ Time management
-  progressCheckInterval: 5 * 60 * 1000,  // 5 minutes
-  stagnationThreshold: 15 * 60 * 1000,   // 15 minutes
+  "default-workflow": {
+    "agents": {
+      "supervisor": { "model": "opus", "subscribesTo": ["planner", "coder", "tester"] },
+      "planner": { "model": "sonnet", "subscribesTo": ["supervisor", "coder", "tester"] },
+      "coder": { "model": "opus", "subscribesTo": ["supervisor", "planner"] },
+      "tester": { "model": "opus", "subscribesTo": ["supervisor", "planner"] }
+    }
+  }
 }
 ```
 
-## 💻 Programmatic Usage
+## 🔧 Requirements
 
-```javascript
-import { AutonomousRunnerCLI } from 'claude-autonomous-runner';
+- Node.js >= 18.0.0
+- Claude CLI installed and configured
 
-const runner = new AutonomousRunnerCLI({
-  workingDirectory: '/path/to/project',
-  onProgress: (data) => console.log('Progress:', data),
-  onSupervision: (data) => console.log('Supervision:', data.assessment),
-  onVerification: (data) => console.log('Verified:', data.passed),
-  onComplete: (report) => console.log('Done:', report.status),
-});
+## 📜 License
 
-await runner.initialize({
-  primaryGoal: 'Build a REST API',
-  subGoals: ['Design schema', 'Implement endpoints', 'Add tests'],
-  timeLimit: '2h',
-});
-
-const report = await runner.run();
-// report.status: 'completed' | 'verification_failed' | 'time_expired' | 'aborted'
-// report.finalVerification.overallPassed: true | false
-```
-
-## 📋 Requirements
-
-- 📦 Node.js 18+
-- 🤖 Claude Code CLI installed and authenticated
-- 💳 Active Claude Max subscription
-- 🐳 Docker (optional, for containerized execution)
-
-```bash
-# Install Claude Code CLI
-npm install -g @anthropic-ai/claude-code
-
-# Authenticate (run once)
-claude
-```
-
-## 📄 License
-
-MIT ⚖️
+MIT

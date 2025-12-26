@@ -1,47 +1,31 @@
 {
-  "name": "claude-autonomous-runner",
+  "name": "claude-looper-agents",
   "version": "1.0.0",
-  "description": "Run Claude in continuous autonomous mode with LLM-based supervision",
+  "description": "Multi-agent framework with event-driven state management for autonomous task execution",
   "type": "module",
-  "main": "src/index.js",
+  "main": "agent-core.js",
   "bin": {
-    "claude-auto": "./src/cli-max.js"
+    "claude-looper": "./cli.js"
   },
   "scripts": {
-    "copy-state": "rm -rf ./tmp && mkdir ./tmp && cp -r ../claude-looper-2/.claude-runner/* ./tmp/",
-    "start": "node src/cli-max.js",
-    "test": "vitest run",
-    "experiment": "vitest run ./src/experiments/agent.test.js",
-    "test:watch": "vitest",
-    "test:agents": "vitest run src/agents/tests",
-    "docker:build": "docker build -t claude .",
-    "build": "cd src/web && npm run build && cd ../.. && docker build -t claude .",
-    "build:web": "cd src/web && npm run build",
-    "dev:web": "cd src/web && npm run dev"
+    "test": "node --test *.test.js",
+    "test:integration": "node --test integration.test.js",
+    "start": "node cli.js",
+    "example": "node example.js"
   },
-  "devDependencies": {
-    "vitest": "^2.1.0"
-  },
+  "keywords": [
+    "multi-agent",
+    "autonomous",
+    "claude",
+    "ai"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
-    "express": "^5.2.1",
-    "glob": "^10.3.0",
-    "ink": "^6.5.1",
-    "ink-big-text": "^2.0.0",
-    "ink-gradient": "^3.0.0",
-    "ink-spinner": "^5.0.0",
-    "react": "^19.2.3",
-    "ws": "^8.18.3"
+    "blessed": "^0.1.81",
+    "handlebars": "^4.7.8"
   },
   "engines": {
     "node": ">=18.0.0"
-  },
-  "keywords": [
-    "claude",
-    "ai",
-    "autonomous",
-    "agent",
-    "cli",
-    "supervisor"
-  ],
-  "license": "MIT"
+  }
 }
