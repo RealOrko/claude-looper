@@ -4,128 +4,216 @@
  * CLI Entry Point for Multi-Agent Framework
  *
  * Usage:
- *   node cli.js "Your goal description"
- *   node cli.js --resume
- *   node cli.js --status
- *   node cli.js --no-ui "goal"  (disable terminal UI)
+ *   claude-looper "Your goal description"
+ *   claude-looper --resume
+ *   claude-looper --status
+ *   claude-looper --no-ui "goal"  (disable terminal UI)
+ *   claude-looper --docker "goal" (run inside Docker container)
  */
 
-import { Orchestrator, PHASES } from './orchestrator.js';
-import agentCore, { EventTypes } from './agent-core.js';
-import agentExecutor from './agent-executor.js';
-import { TerminalUI } from './terminal-ui.js';
-
-const args = process.argv.slice(2);
-const useUI = !args.includes('--no-ui');
-
-/**
- * Set up UI event handlers for both execute and resume flows
- */
-function setupUIEventHandlers(ui, orchestrator) {
-  // Helper to update tasks with current/next indicators
-  const updateTasksWithState = () => {
-    const plannerAgent = agentCore.getAgent('planner');
-    if (plannerAgent) {
-      // Get execution state from planner if available
-      const planner = orchestrator.agents?.planner;
-      const execState = planner?.getTaskExecutionState?.() || {};
-      ui.updateTasks(plannerAgent.tasks, {
-        currentTaskId: execState.currentTaskId,
-        nextTaskId: execState.nextTaskId
-      });
-    }
-  };
-
-  // Wire up agentCore events
-  agentCore.on('*', (event) => {
-    ui.addEventFromCore(event);
-
-    // Update phase on workflow events
-    if (event.type === EventTypes.WORKFLOW_STARTED) {
-      ui.setPhase('planning');
-    }
-
-    // Update tasks when planner tasks change
-    if (event.source === 'planner' &&
-        (event.type === EventTypes.TASK_ADDED ||
-         event.type === EventTypes.TASK_UPDATED ||
-         event.type === EventTypes.TASK_COMPLETED ||
-         event.type === EventTypes.TASK_FAILED)) {
-      updateTasksWithState();
-    }
-  });
-
-  // Wire up agentExecutor events for real-time output
-  agentExecutor.on('stdout', ({ agentName, chunk }) => {
-    ui.updateAgentPanel(agentName, chunk);
-  });
-
-  // Show busy spinner when agents are executing
-  agentExecutor.on('start', () => {
-    ui.setBusy(true);
-  });
-
-  agentExecutor.on('complete', () => {
-    ui.setBusy(false);
-  });
-
-  agentExecutor.on('error', () => {
-    ui.setBusy(false);
-  });
-
-  agentExecutor.on('stderr', ({ agentName, chunk }) => {
-    ui.addEvent(agentName, `stderr: ${chunk.trim()}`);
-  });
-
-  agentExecutor.on('retry', ({ agentName, attempt, maxRetries, delay }) => {
-    ui.addEvent(agentName, `Retry ${attempt}/${maxRetries} (${Math.round(delay)}ms)`);
-  });
-
-  agentExecutor.on('fallback', ({ agentName, model }) => {
-    ui.addEvent(agentName, `Fallback to model: ${model}`);
-  });
-
-  // Handle graceful shutdown with state preservation
-  const cleanup = (signal) => {
-    // Save state before exiting
-    try {
-      orchestrator.abort();
-      agentCore.snapshot();
-    } catch (e) {
-      // Ignore errors during cleanup
-    }
-    if (ui) {
-      ui.shutdown();
-    }
-    if (signal) {
-      console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
-      process.exit(130); // 128 + SIGINT(2)
-    }
-  };
-
-  process.on('SIGINT', () => cleanup('SIGINT'));
-  process.on('SIGTERM', () => cleanup('SIGTERM'));
-  process.on('uncaughtException', (err) => {
-    cleanup();
-    console.error('Uncaught exception:', err);
-    process.exit(1);
-  });
-
-  // Set up phase monitoring
-  const phaseCheck = setInterval(() => {
-    if (orchestrator.currentPhase && ui) {
-      ui.setPhase(orchestrator.currentPhase);
-    }
-  }, 100);
-
-  // Return cleanup function
-  return () => {
-    clearInterval(phaseCheck);
-    cleanup();
-  };
+// Check for --docker flag early before other imports
+const rawArgs = process.argv.slice(2);
+if (rawArgs.includes('--docker')) {
+  runInDocker(rawArgs.filter(a => a !== '--docker')).then(code => process.exit(code));
+} else {
+  // Only import heavy modules if not running in docker mode
+  startMain();
 }
 
-async function main() {
+/**
+ * Run the CLI inside a Docker container
+ */
+async function runInDocker(args) {
+  const { spawn } = await import('child_process');
+  const { homedir } = await import('os');
+  const path = await import('path');
+  const fs = await import('fs');
+
+  const cwd = process.cwd();
+  const home = homedir();
+  const claudeConfigDir = path.join(home, '.claude');
+  const sshDir = path.join(home, '.ssh');
+
+  // ANSI color codes
+  const cyan = '\x1b[36m';
+  const gray = '\x1b[90m';
+  const reset = '\x1b[0m';
+
+  // Build docker run command
+  const dockerArgs = [
+    'run',
+    '--rm',
+    '-it',
+    // Use host network for better connectivity
+    '--network=host',
+    // Mount current directory as workspace
+    '-v', `${cwd}:/home/claude/workspace`,
+    // Mount ~/.claude for credentials (read-write since Claude Code writes debug logs)
+    '-v', `${claudeConfigDir}:/home/claude/.claude`,
+    // Set working directory
+    '-w', '/home/claude/workspace',
+  ];
+
+  // Optionally mount ~/.ssh if it exists (read-only)
+  if (fs.existsSync(sshDir)) {
+    dockerArgs.push('-v', `${sshDir}:/home/claude/.ssh:ro`);
+  }
+
+  // Mount /tmp for temporary files
+  dockerArgs.push('-v', '/tmp:/tmp');
+
+  // Add the image name
+  dockerArgs.push('claude');
+
+  // Run claude-looper with the passed arguments
+  dockerArgs.push('claude-looper', ...args);
+
+  console.log(`${cyan}→ Running in docker container...${reset}`);
+  console.log(`${gray}  Mounting: ${cwd} -> /home/claude/workspace${reset}`);
+  console.log(`${gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${reset}`);
+  if (fs.existsSync(sshDir)) {
+    console.log(`${gray}  Mounting: ${sshDir} -> /home/claude/.ssh (read-only)${reset}`);
+  }
+  console.log(`${gray}  Mounting: /tmp -> /tmp${reset}`);
+  console.log('');
+
+  const proc = spawn('docker', dockerArgs, {
+    stdio: 'inherit',
+  });
+
+  return new Promise((resolve) => {
+    proc.on('close', (code) => {
+      resolve(code ?? 0);
+    });
+    proc.on('error', (err) => {
+      console.error(`Failed to start docker: ${err.message}`);
+      resolve(1);
+    });
+  });
+}
+
+/**
+ * Start the main CLI (non-docker mode)
+ */
+async function startMain() {
+  const { Orchestrator, PHASES } = await import('./orchestrator.js');
+  const agentCoreModule = await import('./agent-core.js');
+  const agentCore = agentCoreModule.default;
+  const { EventTypes } = agentCoreModule;
+  const agentExecutorModule = await import('./agent-executor.js');
+  const agentExecutor = agentExecutorModule.default;
+  const { TerminalUI } = await import('./terminal-ui.js');
+
+  const args = process.argv.slice(2);
+  const useUI = !args.includes('--no-ui');
+
+  /**
+   * Set up UI event handlers for both execute and resume flows
+   */
+  function setupUIEventHandlers(ui, orchestrator) {
+    // Helper to update tasks with current/next indicators
+    const updateTasksWithState = () => {
+      const plannerAgent = agentCore.getAgent('planner');
+      if (plannerAgent) {
+        // Get execution state from planner if available
+        const planner = orchestrator.agents?.planner;
+        const execState = planner?.getTaskExecutionState?.() || {};
+        ui.updateTasks(plannerAgent.tasks, {
+          currentTaskId: execState.currentTaskId,
+          nextTaskId: execState.nextTaskId
+        });
+      }
+    };
+
+    // Wire up agentCore events
+    agentCore.on('*', (event) => {
+      ui.addEventFromCore(event);
+
+      // Update phase on workflow events
+      if (event.type === EventTypes.WORKFLOW_STARTED) {
+        ui.setPhase('planning');
+      }
+
+      // Update tasks when planner tasks change
+      if (event.source === 'planner' &&
+          (event.type === EventTypes.TASK_ADDED ||
+           event.type === EventTypes.TASK_UPDATED ||
+           event.type === EventTypes.TASK_COMPLETED ||
+           event.type === EventTypes.TASK_FAILED)) {
+        updateTasksWithState();
+      }
+    });
+
+    // Wire up agentExecutor events for real-time output
+    agentExecutor.on('stdout', ({ agentName, chunk }) => {
+      ui.updateAgentPanel(agentName, chunk);
+    });
+
+    // Show busy spinner when agents are executing
+    agentExecutor.on('start', () => {
+      ui.setBusy(true);
+    });
+
+    agentExecutor.on('complete', () => {
+      ui.setBusy(false);
+    });
+
+    agentExecutor.on('error', () => {
+      ui.setBusy(false);
+    });
+
+    agentExecutor.on('stderr', ({ agentName, chunk }) => {
+      ui.addEvent(agentName, `stderr: ${chunk.trim()}`);
+    });
+
+    agentExecutor.on('retry', ({ agentName, attempt, maxRetries, delay }) => {
+      ui.addEvent(agentName, `Retry ${attempt}/${maxRetries} (${Math.round(delay)}ms)`);
+    });
+
+    agentExecutor.on('fallback', ({ agentName, model }) => {
+      ui.addEvent(agentName, `Fallback to model: ${model}`);
+    });
+
+    // Handle graceful shutdown with state preservation
+    const cleanup = (signal) => {
+      // Save state before exiting
+      try {
+        orchestrator.abort();
+        agentCore.snapshot();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+      if (ui) {
+        ui.shutdown();
+      }
+      if (signal) {
+        console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
+        process.exit(130); // 128 + SIGINT(2)
+      }
+    };
+
+    process.on('SIGINT', () => cleanup('SIGINT'));
+    process.on('SIGTERM', () => cleanup('SIGTERM'));
+    process.on('uncaughtException', (err) => {
+      cleanup();
+      console.error('Uncaught exception:', err);
+      process.exit(1);
+    });
+
+    // Set up phase monitoring
+    const phaseCheck = setInterval(() => {
+      if (orchestrator.currentPhase && ui) {
+        ui.setPhase(orchestrator.currentPhase);
+      }
+    }, 100);
+
+    // Return cleanup function
+    return () => {
+      clearInterval(phaseCheck);
+      cleanup();
+    };
+  }
+
   // Enable silent mode when UI is active to prevent console output interfering
   const orchestrator = new Orchestrator({ silent: useUI });
   let ui = null;
@@ -223,10 +311,11 @@ async function main() {
   const goal = args.filter(a => !a.startsWith('--')).join(' ');
 
   if (!goal) {
-    console.log('Usage: node cli.js "Your goal description"');
-    console.log('       node cli.js --resume');
-    console.log('       node cli.js --status');
-    console.log('       node cli.js --no-ui "goal"');
+    console.log('Usage: claude-looper "Your goal description"');
+    console.log('       claude-looper --resume');
+    console.log('       claude-looper --status');
+    console.log('       claude-looper --no-ui "goal"');
+    console.log('       claude-looper --docker "goal"');
     process.exit(1);
   }
 
@@ -267,5 +356,3 @@ async function main() {
     process.exit(1);
   }
 }
-
-main().catch(console.error);

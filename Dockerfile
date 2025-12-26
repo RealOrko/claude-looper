@@ -54,7 +54,7 @@ RUN npm install -g @anthropic-ai/claude-code
 
 # Copy and install claude-looper CLI globally
 COPY . /opt/claude-looper
-RUN chmod -R a+rX /opt/claude-looper && cd /opt/claude-looper && npm install && npm link && npm run build:web
+RUN chmod -R a+rX /opt/claude-looper && cd /opt/claude-looper && npm install && npm link
 
 # Create claude user with sudo access (UID 1000 to match typical host user)
 # First remove any existing user with UID 1000, then create claude user

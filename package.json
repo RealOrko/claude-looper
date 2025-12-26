@@ -9,9 +9,7 @@
   },
   "scripts": {
     "test": "node --test *.test.js",
-    "test:integration": "node --test integration.test.js",
-    "start": "node cli.js",
-    "example": "node example.js"
+    "docker": "docker build -t claude ."
   },
   "keywords": [
     "multi-agent",
