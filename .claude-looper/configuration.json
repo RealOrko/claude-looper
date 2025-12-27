@@ -1,0 +1,325 @@
+{
+  "default-workflow": {
+    "name": "Standard Development Workflow",
+    "description": "Multi-agent workflow for autonomous software development",
+    "version": "1.0.0",
+    "agents": {
+      "supervisor": {
+        "model": "opus",
+        "fallbackModel": "sonnet",
+        "subscribesTo": [
+          "planner",
+          "coder",
+          "tester"
+        ],
+        "role": "Critique and verify output from other agents",
+        "tools": [
+          {
+            "name": "verificationComplete",
+            "description": "Signal completion of verification",
+            "params": [
+              {
+                "name": "score",
+                "type": "number",
+                "description": "Quality score 0-100"
+              },
+              {
+                "name": "approved",
+                "type": "boolean",
+                "description": "Whether work can proceed"
+              },
+              {
+                "name": "completeness",
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "partial",
+                  "insufficient"
+                ]
+              },
+              {
+                "name": "issues",
+                "type": "array",
+                "description": "List of issues found"
+              },
+              {
+                "name": "recommendation",
+                "type": "string",
+                "enum": [
+                  "approve",
+                  "revise",
+                  "reject"
+                ]
+              },
+              {
+                "name": "feedback",
+                "type": "string",
+                "description": "Detailed feedback"
+              }
+            ]
+          },
+          {
+            "name": "progressAssessment",
+            "description": "Assess overall progress toward goal",
+            "params": [
+              {
+                "name": "onTrack",
+                "type": "boolean"
+              },
+              {
+                "name": "percentComplete",
+                "type": "number"
+              },
+              {
+                "name": "healthScore",
+                "type": "number"
+              },
+              {
+                "name": "continueExecution",
+                "type": "boolean"
+              }
+            ]
+          }
+        ],
+        "thresholds": {
+          "approval": 70,
+          "revision": 50,
+          "rejection": 30
+        }
+      },
+      "planner": {
+        "model": "sonnet",
+        "fallbackModel": "haiku",
+        "subscribesTo": [
+          "supervisor",
+          "coder",
+          "tester"
+        ],
+        "role": "Break down goals into actionable tasks",
+        "tools": [
+          {
+            "name": "planComplete",
+            "description": "Signal plan creation complete",
+            "params": [
+              {
+                "name": "tasks",
+                "type": "array",
+                "description": "List of task objects"
+              },
+              {
+                "name": "totalEstimatedComplexity",
+                "type": "number"
+              },
+              {
+                "name": "risks",
+                "type": "array"
+              },
+              {
+                "name": "assumptions",
+                "type": "array"
+              }
+            ]
+          },
+          {
+            "name": "replanComplete",
+            "description": "Signal re-planning complete for failed task",
+            "params": [
+              {
+                "name": "analysis",
+                "type": "string"
+              },
+              {
+                "name": "subtasks",
+                "type": "array"
+              },
+              {
+                "name": "blockerResolution",
+                "type": "string"
+              }
+            ]
+          }
+        ],
+        "settings": {
+          "minTasks": 2,
+          "maxTasks": 15,
+          "maxReplanDepth": 3,
+          "attemptsBeforeReplan": 3
+        }
+      },
+      "coder": {
+        "model": "opus",
+        "fallbackModel": "sonnet",
+        "subscribesTo": [
+          "supervisor",
+          "planner"
+        ],
+        "role": "Implement tasks to high standards",
+        "tools": [
+          {
+            "name": "implementationComplete",
+            "description": "Signal implementation complete",
+            "params": [
+              {
+                "name": "status",
+                "type": "string",
+                "enum": [
+                  "complete",
+                  "blocked",
+                  "needs_clarification"
+                ]
+              },
+              {
+                "name": "summary",
+                "type": "string"
+              },
+              {
+                "name": "filesModified",
+                "type": "array"
+              },
+              {
+                "name": "testsAdded",
+                "type": "array"
+              },
+              {
+                "name": "commands",
+                "type": "array"
+              }
+            ]
+          },
+          {
+            "name": "fixComplete",
+            "description": "Signal fix attempt complete",
+            "params": [
+              {
+                "name": "status",
+                "type": "string",
+                "enum": [
+                  "fixed",
+                  "still_failing",
+                  "blocked"
+                ]
+              },
+              {
+                "name": "summary",
+                "type": "string"
+              },
+              {
+                "name": "filesModified",
+                "type": "array"
+              },
+              {
+                "name": "testsPass",
+                "type": "boolean"
+              }
+            ]
+          }
+        ],
+        "settings": {
+          "timeout": 900000,
+          "maxFixCycles": 3
+        }
+      },
+      "tester": {
+        "model": "opus",
+        "fallbackModel": "sonnet",
+        "subscribesTo": [
+          "supervisor",
+          "planner"
+        ],
+        "role": "Validate implementations and generate fix plans",
+        "tools": [
+          {
+            "name": "testComplete",
+            "description": "Signal test completion",
+            "params": [
+              {
+                "name": "status",
+                "type": "string",
+                "enum": [
+                  "passed",
+                  "failed",
+                  "blocked"
+                ]
+              },
+              {
+                "name": "testsRun",
+                "type": "number"
+              },
+              {
+                "name": "testsPassed",
+                "type": "number"
+              },
+              {
+                "name": "testsFailed",
+                "type": "number"
+              },
+              {
+                "name": "failures",
+                "type": "array"
+              },
+              {
+                "name": "coverage",
+                "type": "number"
+              },
+              {
+                "name": "fixPlan",
+                "type": "string"
+              }
+            ]
+          }
+        ],
+        "settings": {
+          "requireTests": true,
+          "minCoverage": 60
+        }
+      }
+    },
+    "execution": {
+      "phases": [
+        "planning",
+        "plan_review",
+        "execution",
+        "verification"
+      ],
+      "maxStepAttempts": 3,
+      "maxFixCycles": 3,
+      "requirePrePlanReview": true,
+      "maxPlanRevisions": 3,
+      "verifyAllOutputs": true,
+      "progressCheckInterval": 300000,
+      "timeLimit": 7200000
+    },
+    "timeBudget": {
+      "planning": 0.1,
+      "execution": 0.8,
+      "verification": 0.1
+    },
+    "escalation": {
+      "levels": [
+        "none",
+        "remind",
+        "correct",
+        "refocus",
+        "critical",
+        "abort"
+      ],
+      "scoreThresholds": {
+        "none": 70,
+        "remind": 50,
+        "correct": 30,
+        "refocus": 0
+      },
+      "maxIssuesBeforeCritical": 4,
+      "maxIssuesBeforeAbort": 5
+    },
+    "planReviewFailure": {
+      "action": "skip_and_continue",
+      "options": [
+        "skip_and_continue",
+        "lower_threshold",
+        "abort"
+      ],
+      "lowerThresholdTo": 50
+    }
+  }
+}

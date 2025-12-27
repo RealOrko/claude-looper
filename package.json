@@ -9,6 +9,8 @@
   },
   "scripts": {
     "test": "node --test *.test.js",
+    "test:coverage": "c8 --reporter=text --reporter=html node --test *.test.js",
+    "test:coverage:check": "c8 --check-coverage --lines 60 --functions 60 --branches 50 node --test *.test.js",
     "docker": "docker build -t claude ."
   },
   "keywords": [
@@ -25,5 +27,8 @@
   },
   "engines": {
     "node": ">=18.0.0"
+  },
+  "devDependencies": {
+    "c8": "^10.1.3"
   }
 }

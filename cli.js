@@ -144,38 +144,33 @@ async function startMain() {
       }
     });
 
-    // Wire up agentExecutor events for real-time output
-    agentExecutor.on('stdout', ({ agentName, chunk }) => {
-      ui.updateAgentPanel(agentName, chunk);
-    });
-
-    // Show busy spinner when agents are executing and display the prompt
-    agentExecutor.on('start', ({ agentName, prompt }) => {
-      ui.setBusy(true);
-      // Display the prompt being sent to the agent
-      if (prompt) {
-        ui.showAgentPrompt(agentName, prompt);
+    // Wire up agentExecutor callbacks for real-time output
+    agentExecutor.setCallbacks({
+      onStdout: ({ agentName, chunk }) => {
+        ui.updateAgentPanel(agentName, chunk);
+      },
+      onStart: ({ agentName, prompt }) => {
+        ui.setBusy(true);
+        // Display the prompt being sent to the agent
+        if (prompt) {
+          ui.showAgentPrompt(agentName, prompt);
+        }
+      },
+      onComplete: () => {
+        ui.setBusy(false);
+      },
+      onError: () => {
+        ui.setBusy(false);
+      },
+      onStderr: ({ agentName, chunk }) => {
+        ui.addEvent(agentName, `stderr: ${chunk.trim()}`);
+      },
+      onRetry: ({ agentName, attempt, maxRetries, delay }) => {
+        ui.addEvent(agentName, `Retry ${attempt}/${maxRetries} (${Math.round(delay)}ms)`);
+      },
+      onFallback: ({ agentName, model }) => {
+        ui.addEvent(agentName, `Fallback to model: ${model}`);
       }
-    });
-
-    agentExecutor.on('complete', () => {
-      ui.setBusy(false);
-    });
-
-    agentExecutor.on('error', () => {
-      ui.setBusy(false);
-    });
-
-    agentExecutor.on('stderr', ({ agentName, chunk }) => {
-      ui.addEvent(agentName, `stderr: ${chunk.trim()}`);
-    });
-
-    agentExecutor.on('retry', ({ agentName, attempt, maxRetries, delay }) => {
-      ui.addEvent(agentName, `Retry ${attempt}/${maxRetries} (${Math.round(delay)}ms)`);
-    });
-
-    agentExecutor.on('fallback', ({ agentName, model }) => {
-      ui.addEvent(agentName, `Fallback to model: ${model}`);
     });
 
     // Handle graceful shutdown with state preservation
@@ -187,6 +182,8 @@ async function startMain() {
       } catch (e) {
         // Ignore errors during cleanup
       }
+      // Clear executor callbacks
+      agentExecutor.clearCallbacks();
       if (ui) {
         ui.shutdown();
       }

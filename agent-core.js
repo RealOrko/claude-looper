@@ -12,7 +12,29 @@ import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 
-// Event types for state changes
+/**
+ * Event types emitted by AgentCore for state changes.
+ * Subscribe to these events using agentCore.on(EventTypes.EVENT_NAME, handler).
+ * All events are also emitted on the '*' wildcard channel.
+ *
+ * @constant {Object.<string, string>}
+ * @property {string} AGENT_REGISTERED - Emitted when a new agent is registered
+ * @property {string} STATE_CHANGED - Emitted when an agent's custom state is updated
+ * @property {string} GOAL_SET - Emitted when a goal is set for an agent
+ * @property {string} GOAL_UPDATED - Emitted when a goal is updated (not completed)
+ * @property {string} GOAL_COMPLETED - Emitted when a goal is marked as completed
+ * @property {string} TASK_ADDED - Emitted when a new task is added
+ * @property {string} TASK_UPDATED - Emitted when a task is updated
+ * @property {string} TASK_COMPLETED - Emitted when a task is marked as completed
+ * @property {string} TASK_FAILED - Emitted when a task is marked as failed
+ * @property {string} MEMORY_UPDATED - Emitted when memory is added to an agent
+ * @property {string} OUTPUT_RECORDED - Emitted when an output is recorded
+ * @property {string} INTERACTION_LOGGED - Emitted when an agent interaction is logged
+ * @property {string} SNAPSHOT_SAVED - Emitted when state is saved to disk
+ * @property {string} SNAPSHOT_LOADED - Emitted when state is loaded from disk
+ * @property {string} WORKFLOW_STARTED - Emitted when a workflow begins
+ * @property {string} WORKFLOW_COMPLETED - Emitted when a workflow completes
+ */
 export const EventTypes = {
   AGENT_REGISTERED: 'agent:registered',
   STATE_CHANGED: 'state:changed',
@@ -32,7 +54,14 @@ export const EventTypes = {
   WORKFLOW_COMPLETED: 'workflow:completed'
 };
 
-// Change types for state modifications
+/**
+ * Change types for state modifications included in event payloads.
+ *
+ * @constant {Object.<string, string>}
+ * @property {string} ADDED - A new entity was added
+ * @property {string} MODIFIED - An existing entity was modified
+ * @property {string} REMOVED - An entity was removed
+ */
 export const ChangeTypes = {
   ADDED: 'added',
   MODIFIED: 'modified',
@@ -40,17 +69,65 @@ export const ChangeTypes = {
 };
 
 /**
- * Agent Core Singleton Class
- * Manages all agent state, events, and persistence
+ * Agent Core Singleton Class - Central hub for multi-agent state management.
+ *
+ * AgentCore extends EventEmitter to provide event-driven coordination between agents.
+ * It manages agent registration, state, goals, tasks, and workflow persistence.
+ *
+ * @extends EventEmitter
+ *
+ * @example
+ * // Import the singleton instance
+ * import agentCore, { EventTypes } from './agent-core.js';
+ *
+ * // Register an agent
+ * const agent = agentCore.registerAgent('planner', { model: 'sonnet' });
+ *
+ * // Subscribe to events
+ * agentCore.on(EventTypes.TASK_COMPLETED, (event) => {
+ *   console.log(`Task completed by ${event.source}`);
+ * });
+ *
+ * // Subscribe to all events with wildcard
+ * agentCore.on('*', (event) => {
+ *   console.log(`Event: ${event.type}`);
+ * });
+ *
+ * @fires AgentCore#agent:registered
+ * @fires AgentCore#state:changed
+ * @fires AgentCore#goal:set
+ * @fires AgentCore#goal:updated
+ * @fires AgentCore#goal:completed
+ * @fires AgentCore#task:added
+ * @fires AgentCore#task:updated
+ * @fires AgentCore#task:completed
+ * @fires AgentCore#task:failed
+ * @fires AgentCore#memory:updated
+ * @fires AgentCore#output:recorded
+ * @fires AgentCore#interaction:logged
+ * @fires AgentCore#snapshot:saved
+ * @fires AgentCore#snapshot:loaded
+ * @fires AgentCore#workflow:started
+ * @fires AgentCore#workflow:completed
  */
 class AgentCore extends EventEmitter {
+  /**
+   * Creates a new AgentCore instance.
+   * Note: Use the exported singleton `agentCore` instead of instantiating directly.
+   */
   constructor() {
     super();
 
-    // Main agents state store
+    /**
+     * Map of registered agents by name.
+     * @type {Object.<string, Agent>}
+     */
     this.agents = {};
 
-    // Global workflow state
+    /**
+     * Current workflow state.
+     * @type {{active: boolean, name: string|null, goal: string|null, startTime: number|null, configuration: Object|null}}
+     */
     this.workflow = {
       active: false,
       name: null,
@@ -59,13 +136,34 @@ class AgentCore extends EventEmitter {
       configuration: null
     };
 
-    // Event log for debugging and replay
+    /**
+     * Event log for debugging and replay.
+     * @type {Array<Object>}
+     */
     this.eventLog = [];
+
+    /**
+     * Maximum number of events to keep in the log.
+     * @type {number}
+     */
     this.maxEventLogSize = 500;
 
-    // State directory configuration
+    /**
+     * Directory name for state files (relative to cwd).
+     * @type {string}
+     */
     this.stateDir = '.claude-looper';
+
+    /**
+     * State snapshot filename.
+     * @type {string}
+     */
     this.stateFile = 'state.json';
+
+    /**
+     * Configuration filename.
+     * @type {string}
+     */
     this.configFile = 'configuration.json';
 
     // Increase listener limit for many agent subscriptions
@@ -73,35 +171,49 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Get the full path to the state directory
+   * Get the full path to the state directory.
+   * @returns {string} Absolute path to .claude-looper directory
    */
   getStateDir() {
     return path.join(process.cwd(), this.stateDir);
   }
 
   /**
-   * Get the full path to the state file
+   * Get the full path to the state file.
+   * @returns {string} Absolute path to state.json
    */
   getStatePath() {
     return path.join(this.getStateDir(), this.stateFile);
   }
 
   /**
-   * Get the full path to the configuration file
+   * Get the full path to the configuration file.
+   * @returns {string} Absolute path to configuration.json
    */
   getConfigPath() {
     return path.join(this.getStateDir(), this.configFile);
   }
 
   /**
-   * Register a new agent with the core, or get existing if already registered
-   * @param {string} name - Unique agent name
-   * @param {object} options - Agent configuration
-   * @param {string} options.model - Claude model to use (opus, sonnet, haiku)
-   * @param {object} options.state - Initial custom state
-   * @param {string[]} options.subscribesTo - Agent names to subscribe to
-   * @param {object[]} options.tools - Tool definitions for this agent
-   * @param {boolean} options.allowExisting - If true, return existing agent instead of throwing
+   * Register a new agent with the core, or get existing if already registered.
+   * Emits 'agent:registered' event on successful registration.
+   *
+   * @param {string} name - Unique agent name (e.g., 'planner', 'coder')
+   * @param {Object} [options={}] - Agent configuration options
+   * @param {string} [options.model='sonnet'] - Claude model to use ('opus', 'sonnet', 'haiku')
+   * @param {Object} [options.state={}] - Initial custom state for the agent
+   * @param {string[]} [options.subscribesTo=[]] - Names of agents to subscribe to events from
+   * @param {Object[]} [options.tools=[]] - Tool definitions available to this agent
+   * @param {boolean} [options.allowExisting=false] - If true, return existing agent instead of throwing
+   * @returns {Object} The registered agent object
+   * @throws {Error} If agent already exists and allowExisting is false
+   *
+   * @example
+   * const planner = agentCore.registerAgent('planner', {
+   *   model: 'sonnet',
+   *   subscribesTo: ['supervisor', 'coder'],
+   *   state: { plansCreated: 0 }
+   * });
    */
   registerAgent(name, options = {}) {
     if (this.agents[name]) {
@@ -140,16 +252,18 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Get an agent by name
-   * @param {string} name - Agent name
+   * Get an agent by name.
+   * @param {string} name - Agent name to look up
+   * @returns {Object|null} The agent object or null if not found
    */
   getAgent(name) {
     return this.agents[name] || null;
   }
 
   /**
-   * Get an agent's state
+   * Get an agent's custom state object.
    * @param {string} name - Agent name
+   * @returns {Object|null} The agent's state object or null if agent not found
    */
   getAgentState(name) {
     const agent = this.agents[name];
@@ -157,9 +271,13 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Update an agent's custom state
+   * Update an agent's custom state by merging in new values.
+   * Emits 'state:changed' event with old and new state.
+   *
    * @param {string} name - Agent name
-   * @param {object} updates - State updates to merge
+   * @param {Object} updates - State updates to merge into existing state
+   * @returns {Object} The updated state object
+   * @throws {Error} If agent is not found
    */
   updateAgentState(name, updates) {
     const agent = this.agents[name];
@@ -182,9 +300,15 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Set a goal for an agent
+   * Set a goal for an agent.
+   * Emits 'goal:set' event.
+   *
    * @param {string} agentName - Agent name
-   * @param {object} goal - Goal object
+   * @param {Object|string} goal - Goal object with description and metadata, or just a description string
+   * @param {string} [goal.description] - Goal description
+   * @param {Object} [goal.metadata] - Additional metadata
+   * @returns {Object} The created goal object with id, status, timestamps
+   * @throws {Error} If agent is not found
    */
   setGoal(agentName, goal) {
     const agent = this.agents[agentName];
@@ -215,10 +339,15 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Update a goal's status
+   * Update a goal's status or properties.
+   * Emits 'goal:completed' if status is set to 'completed', otherwise 'goal:updated'.
+   *
    * @param {string} agentName - Agent name
-   * @param {string} goalId - Goal ID
-   * @param {object} updates - Updates to apply
+   * @param {string} goalId - Goal ID (e.g., 'goal-1234567890-abc123')
+   * @param {Object} updates - Updates to apply to the goal
+   * @param {string} [updates.status] - New status ('active', 'completed', 'failed')
+   * @returns {Object} The updated goal object
+   * @throws {Error} If agent or goal is not found
    */
   updateGoal(agentName, goalId, updates) {
     const agent = this.agents[agentName];
@@ -249,9 +378,18 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Add a task for an agent
+   * Add a task for an agent.
+   * Emits 'task:added' event.
+   *
    * @param {string} agentName - Agent name
-   * @param {object} task - Task object
+   * @param {Object|string} task - Task object or description string
+   * @param {string} [task.description] - Task description
+   * @param {number} [task.maxAttempts=3] - Maximum retry attempts
+   * @param {string} [task.parentGoalId] - ID of parent goal
+   * @param {string} [task.parentTaskId] - ID of parent task (for subtasks)
+   * @param {Object} [task.metadata] - Additional metadata
+   * @returns {Object} The created task object with id, status, timestamps
+   * @throws {Error} If agent is not found
    */
   addTask(agentName, task) {
     const agent = this.agents[agentName];
@@ -287,10 +425,16 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Update a task's status
+   * Update a task's status or properties.
+   * Automatically increments attempts when status is 'in_progress' or 'failed'.
+   * Emits 'task:completed', 'task:failed', or 'task:updated' based on new status.
+   *
    * @param {string} agentName - Agent name
-   * @param {string} taskId - Task ID
-   * @param {object} updates - Updates to apply
+   * @param {string} taskId - Task ID (e.g., 'task-1234567890-abc123')
+   * @param {Object} updates - Updates to apply
+   * @param {string} [updates.status] - New status ('pending', 'in_progress', 'completed', 'failed', 'blocked')
+   * @returns {Object} The updated task object
+   * @throws {Error} If agent or task is not found
    */
   updateTask(agentName, taskId, updates) {
     const agent = this.agents[agentName];
@@ -328,10 +472,15 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Add a subtask to an existing task
+   * Add a subtask to an existing task.
+   * The subtask inherits parentGoalId from the parent task.
+   * Emits 'task:added' event.
+   *
    * @param {string} agentName - Agent name
    * @param {string} parentTaskId - Parent task ID
-   * @param {object} subtask - Subtask object
+   * @param {Object} subtask - Subtask object (same format as task)
+   * @returns {Object} The created subtask object
+   * @throws {Error} If agent or parent task is not found
    */
   addSubtask(agentName, parentTaskId, subtask) {
     const agent = this.agents[agentName];
@@ -354,9 +503,17 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Add to agent's memory
+   * Add to agent's memory.
+   * Memory is bounded to 100 entries (oldest are removed).
+   * Emits 'memory:updated' event.
+   *
    * @param {string} agentName - Agent name
-   * @param {object} entry - Memory entry
+   * @param {Object|string} entry - Memory entry object or content string
+   * @param {string} [entry.content] - Memory content
+   * @param {string} [entry.type='general'] - Memory type (e.g., 'observation', 'decision')
+   * @param {Object} [entry.metadata] - Additional metadata
+   * @returns {Object} The created memory entry with id and timestamp
+   * @throws {Error} If agent is not found
    */
   addMemory(agentName, entry) {
     const agent = this.agents[agentName];
@@ -391,9 +548,19 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Record an output from an agent
+   * Record an output from an agent (e.g., Claude response).
+   * Outputs are bounded to 50 entries (oldest are removed).
+   * Emits 'output:recorded' event.
+   *
    * @param {string} agentName - Agent name
-   * @param {object} output - Output object
+   * @param {Object|string} output - Output object or content string
+   * @param {string} [output.content] - Output content
+   * @param {string} [output.type='response'] - Output type
+   * @param {string} [output.taskId] - Associated task ID
+   * @param {Array} [output.toolCalls] - Tool calls made in this output
+   * @param {Object} [output.metadata] - Additional metadata
+   * @returns {Object} The created output entry with id and timestamp
+   * @throws {Error} If agent is not found
    */
   recordOutput(agentName, output) {
     const agent = this.agents[agentName];
@@ -430,10 +597,20 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Log an interaction between agents
+   * Log an interaction between agents.
+   * Interaction is logged to both source and target agents.
+   * Interactions are bounded to 100 entries per agent.
+   * Emits 'interaction:logged' event.
+   *
    * @param {string} fromAgent - Source agent name
    * @param {string} toAgent - Target agent name
-   * @param {object} interaction - Interaction details
+   * @param {Object} interaction - Interaction details
+   * @param {string} [interaction.type='message'] - Interaction type
+   * @param {string} interaction.content - Interaction content
+   * @param {Array} [interaction.toolCalls] - Tool calls in this interaction
+   * @param {Object} [interaction.metadata] - Additional metadata
+   * @returns {Object} The created interaction entry with id and timestamp
+   * @throws {Error} If source agent is not found
    */
   logInteraction(fromAgent, toAgent, interaction) {
     const sourceAgent = this.agents[fromAgent];
@@ -481,10 +658,13 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Start a workflow
-   * @param {string} name - Workflow name
+   * Start a new workflow.
+   * Emits 'workflow:started' event.
+   *
+   * @param {string} name - Workflow name (e.g., 'default-workflow')
    * @param {string} goal - Main goal description
-   * @param {object} configuration - Workflow configuration
+   * @param {Object} [configuration=null] - Workflow configuration object
+   * @returns {Object} The workflow state object
    */
   startWorkflow(name, goal, configuration = null) {
     this.workflow = {
@@ -506,9 +686,12 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Complete the current workflow
-   * @param {string} status - Completion status
-   * @param {object} result - Workflow result
+   * Complete the current workflow.
+   * Emits 'workflow:completed' event.
+   *
+   * @param {string} [status='completed'] - Completion status ('completed', 'failed', 'aborted')
+   * @param {Object} [result=null] - Workflow result data
+   * @returns {Object} The updated workflow state object
    */
   completeWorkflow(status = 'completed', result = null) {
     this.workflow.active = false;
@@ -527,7 +710,13 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Internal method to emit events and log them
+   * Internal method to emit events and log them.
+   * All events are emitted on their specific channel AND the '*' wildcard channel.
+   *
+   * @private
+   * @param {string} eventType - Event type from EventTypes
+   * @param {Object} eventData - Event data including source, changeType, object, agentState
+   * @returns {Object} The complete event object with timestamp
    */
   _emitEvent(eventType, eventData) {
     const event = {
@@ -550,10 +739,19 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Subscribe to events from specific agents
-   * @param {string} subscriberName - Subscribing agent name
-   * @param {string[]} sourceAgents - Agent names to subscribe to
-   * @param {function} handler - Event handler function
+   * Subscribe to events from specific agents.
+   * Events from 'core' are always included.
+   *
+   * @param {string} subscriberName - Subscribing agent name (for documentation only)
+   * @param {string[]} sourceAgents - Agent names to subscribe to events from
+   * @param {Function} handler - Event handler function, called with event object
+   * @returns {Function} Unsubscribe function - call to remove the subscription
+   *
+   * @example
+   * const unsubscribe = agentCore.subscribeToAgents('coder', ['planner', 'supervisor'], (event) => {
+   *   console.log(`Event from ${event.source}: ${event.type}`);
+   * });
+   * // Later: unsubscribe();
    */
   subscribeToAgents(subscriberName, sourceAgents, handler) {
     const wrappedHandler = (event) => {
@@ -568,29 +766,33 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Get all agents
+   * Get all registered agents.
+   * @returns {Object.<string, Object>} Shallow copy of agents map
    */
   getAllAgents() {
     return { ...this.agents };
   }
 
   /**
-   * Get registered agent names
+   * Get names of all registered agents.
+   * @returns {string[]} Array of agent names
    */
   getAgentNames() {
     return Object.keys(this.agents);
   }
 
   /**
-   * Get the event log
-   * @param {number} limit - Maximum number of events to return
+   * Get the event log (most recent events).
+   * @param {number} [limit=100] - Maximum number of events to return
+   * @returns {Array<Object>} Array of event objects, most recent last
    */
   getEventLog(limit = 100) {
     return this.eventLog.slice(-limit);
   }
 
   /**
-   * Ensure the state directory exists
+   * Ensure the state directory exists, creating it if necessary.
+   * @returns {void}
    */
   ensureStateDir() {
     const stateDir = this.getStateDir();
@@ -600,8 +802,12 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Save current state to disk
-   * @param {object} extras - Additional state to persist (e.g., executor sessions)
+   * Save current state to disk for resumability.
+   * Saves agents, workflow, and recent event log to .claude-looper/state.json.
+   * Emits 'snapshot:saved' event.
+   *
+   * @param {Object} [extras={}] - Additional state to persist (e.g., executor sessions)
+   * @returns {Object} The saved state object
    */
   snapshot(extras = {}) {
     this.ensureStateDir();
@@ -628,7 +834,11 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Load state from disk
+   * Load state from disk.
+   * Restores agents, workflow, and event log from .claude-looper/state.json.
+   * Emits 'snapshot:loaded' event.
+   *
+   * @returns {Object|null} The loaded state object, or null if no state file exists
    */
   loadSnapshot() {
     const statePath = this.getStatePath();
@@ -654,7 +864,8 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Load workflow configuration
+   * Load workflow configuration from disk.
+   * @returns {Object|null} The configuration object, or null if no config file exists
    */
   loadConfiguration() {
     const configPath = this.getConfigPath();
@@ -667,8 +878,9 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Save workflow configuration
-   * @param {object} config - Configuration object
+   * Save workflow configuration to disk.
+   * @param {Object} config - Configuration object to save
+   * @returns {Object} The saved configuration object
    */
   saveConfiguration(config) {
     this.ensureStateDir();
@@ -677,7 +889,10 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Check if there's a workflow that can be resumed (active, failed, or aborted)
+   * Check if there's a workflow that can be resumed.
+   * Checks for active, failed, or aborted workflows in saved state.
+   *
+   * @returns {boolean} True if a resumable workflow exists
    */
   canResume() {
     const statePath = this.getStatePath();
@@ -696,7 +911,15 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Get information about what can be resumed
+   * Get information about the saved workflow for resume.
+   *
+   * @returns {Object|null} Resume info object with goal, status, tasks, or null if no saved state
+   * @returns {string} returns.goal - The workflow goal
+   * @returns {string} returns.name - Workflow name
+   * @returns {string} returns.status - Current status
+   * @returns {number} returns.startTime - Workflow start timestamp
+   * @returns {Object} returns.tasks - Task summary (total, completed, failed, pending, inProgress)
+   * @returns {boolean} returns.canRetry - Whether there are tasks to retry
    */
   getResumeInfo() {
     const statePath = this.getStatePath();
@@ -732,7 +955,11 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Reset failed and in-progress tasks for retry
+   * Reset failed and in-progress tasks to pending for retry.
+   * Also re-activates the workflow.
+   *
+   * @param {string} [agentName='planner'] - Agent whose tasks to reset
+   * @returns {number} Number of tasks that were reset
    */
   resetFailedTasks(agentName = 'planner') {
     const agent = this.agents[agentName];
@@ -757,7 +984,11 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Resume from saved state
+   * Resume from saved state.
+   * Loads the snapshot and returns the state.
+   *
+   * @returns {Object} The loaded state object
+   * @throws {Error} If no saved state exists
    */
   resume() {
     const state = this.loadSnapshot();
@@ -769,7 +1000,9 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Reset the core state
+   * Reset the core state to initial empty state.
+   * Clears all agents, workflow, and event log.
+   * @returns {void}
    */
   reset() {
     this.agents = {};
@@ -784,7 +1017,13 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Get summary of current state
+   * Get summary of current state for reporting.
+   *
+   * @returns {Object} Summary object
+   * @returns {number} returns.agentCount - Number of registered agents
+   * @returns {Array<Object>} returns.agents - Array of agent summaries (name, model, taskCount, etc.)
+   * @returns {Object} returns.workflow - Current workflow state
+   * @returns {number} returns.eventLogSize - Number of events in log
    */
   getSummary() {
     const agents = Object.values(this.agents);

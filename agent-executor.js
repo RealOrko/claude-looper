@@ -3,32 +3,75 @@
  *
  * This module wraps the Claude Code CLI invocation for the multi-agent framework.
  * It handles:
- * - Template loading and transformation
+ * - Template loading and transformation using Handlebars
  * - Tool call signaling for structured responses
- * - Session management per agent
- * - Metrics tracking
+ * - Session management per agent (conversation continuity)
+ * - Metrics tracking (calls, retries, costs)
+ * - Retry logic with exponential backoff
+ * - Fallback model support
+ *
+ * Uses callbacks instead of EventEmitter for execution lifecycle events.
+ * All events are routed through agentCore for centralized event management.
+ *
+ * @module agent-executor
  */
 
 import { spawn } from 'child_process';
-import { EventEmitter } from 'events';
 import fs from 'fs';
 import path from 'path';
 import Handlebars from 'handlebars';
 
-// Error categories for retry decisions
+/**
+ * Error categories for retry decisions.
+ * TRANSIENT errors are retried, PERMANENT errors fail immediately.
+ * All keywords are lowercase since categorizeError() lowercases error strings.
+ * @private
+ */
 const ERROR_CATEGORIES = {
-  TRANSIENT: ['ECONNRESET', 'ETIMEDOUT', 'overloaded', 'rate_limit', '529', '503'],
+  TRANSIENT: ['econnreset', 'etimedout', 'overloaded', 'rate_limit', '529', '503'],
   PERMANENT: ['invalid_api_key', 'permission_denied', 'invalid_request'],
   TIMEOUT: ['timed out', 'timeout']
 };
 
 /**
- * Agent Executor class for invoking Claude Code CLI
+ * Agent Executor class for invoking Claude Code CLI.
+ * Uses callbacks for execution lifecycle events instead of EventEmitter.
+ *
+ * @example
+ * import agentExecutor from './agent-executor.js';
+ *
+ * // Set up callbacks for lifecycle events
+ * agentExecutor.setCallbacks({
+ *   onStart: ({ agentName, prompt }) => console.log(`${agentName} starting`),
+ *   onComplete: ({ agentName, result }) => console.log(`${agentName} done`),
+ *   onStdout: ({ agentName, chunk }) => console.log(chunk)
+ * });
+ *
+ * // Execute a prompt
+ * const result = await agentExecutor.execute('planner', 'Create a plan for...', {
+ *   model: 'sonnet',
+ *   fallbackModel: 'haiku'
+ * });
  */
-export class AgentExecutor extends EventEmitter {
+export class AgentExecutor {
+  /**
+   * Creates a new AgentExecutor instance.
+   *
+   * @param {Object} [options={}] - Configuration options
+   * @param {string} [options.cwd=process.cwd()] - Working directory for CLI execution
+   * @param {string} [options.claudePath='claude'] - Path to Claude CLI executable
+   * @param {number} [options.timeout=600000] - Execution timeout in ms (10 minutes default)
+   * @param {boolean} [options.skipPermissions=true] - Skip permission prompts
+   * @param {boolean} [options.verbose=false] - Enable verbose logging
+   * @param {number} [options.maxRetries=3] - Maximum retry attempts
+   * @param {number} [options.retryBaseDelay=1000] - Base delay for exponential backoff (ms)
+   * @param {string} [options.templatesDir] - Directory for Handlebars templates
+   */
   constructor(options = {}) {
-    super();
-
+    /**
+     * Executor configuration options.
+     * @type {Object}
+     */
     this.options = {
       cwd: options.cwd || process.cwd(),
       claudePath: options.claudePath || 'claude',
@@ -40,13 +83,22 @@ export class AgentExecutor extends EventEmitter {
       templatesDir: options.templatesDir || path.join(process.cwd(), '.claude-looper', 'templates')
     };
 
-    // Sessions per agent
+    /**
+     * Map of session IDs per agent for conversation continuity.
+     * @type {Object.<string, string>}
+     */
     this.sessions = {};
 
-    // Template cache
+    /**
+     * Cache of compiled Handlebars templates.
+     * @type {Object.<string, Function>}
+     */
     this.templateCache = {};
 
-    // Global metrics
+    /**
+     * Execution metrics.
+     * @type {{totalCalls: number, totalRetries: number, totalFallbacks: number, totalCostUsd: number, callsByAgent: Object.<string, number>}}
+     */
     this.metrics = {
       totalCalls: 0,
       totalRetries: 0,
@@ -54,11 +106,85 @@ export class AgentExecutor extends EventEmitter {
       totalCostUsd: 0,
       callsByAgent: {}
     };
+
+    /**
+     * Callbacks for execution lifecycle events.
+     * @type {Object}
+     * @property {Function} onStart - Called when execution begins ({ agentName, prompt })
+     * @property {Function} onComplete - Called when execution succeeds ({ agentName, result })
+     * @property {Function} onError - Called when execution fails ({ agentName, error })
+     * @property {Function} onRetry - Called when retrying ({ agentName, attempt, maxRetries, delay, error, category })
+     * @property {Function} onFallback - Called when switching to fallback model ({ agentName, model })
+     * @property {Function} onStdout - Called with stdout data ({ agentName, chunk })
+     * @property {Function} onStderr - Called with stderr data ({ agentName, chunk })
+     */
+    this.callbacks = {
+      onStart: null,
+      onComplete: null,
+      onError: null,
+      onRetry: null,
+      onFallback: null,
+      onStdout: null,
+      onStderr: null
+    };
   }
 
   /**
-   * Load and compile a template
-   * @param {string} templatePath - Relative path to template file
+   * Set callbacks for execution lifecycle events.
+   *
+   * @param {Object} callbacks - Callback functions
+   * @param {Function} [callbacks.onStart] - Called when execution begins
+   * @param {Function} [callbacks.onComplete] - Called when execution succeeds
+   * @param {Function} [callbacks.onError] - Called when execution fails
+   * @param {Function} [callbacks.onRetry] - Called when retrying after failure
+   * @param {Function} [callbacks.onFallback] - Called when switching to fallback model
+   * @param {Function} [callbacks.onStdout] - Called with stdout data
+   * @param {Function} [callbacks.onStderr] - Called with stderr data
+   */
+  setCallbacks(callbacks) {
+    Object.assign(this.callbacks, callbacks);
+  }
+
+  /**
+   * Clear all callbacks.
+   */
+  clearCallbacks() {
+    this.callbacks = {
+      onStart: null,
+      onComplete: null,
+      onError: null,
+      onRetry: null,
+      onFallback: null,
+      onStdout: null,
+      onStderr: null
+    };
+  }
+
+  /**
+   * Internal helper to invoke a callback if set.
+   * @private
+   */
+  _invokeCallback(name, data) {
+    const callback = this.callbacks[name];
+    if (typeof callback === 'function') {
+      try {
+        callback(data);
+      } catch (err) {
+        // Log but don't throw - callbacks shouldn't break execution
+        if (this.options.verbose) {
+          console.error(`[AgentExecutor] Callback error in ${name}:`, err.message);
+        }
+      }
+    }
+  }
+
+  /**
+   * Load and compile a Handlebars template.
+   * Templates are cached after first load.
+   *
+   * @param {string} templatePath - Relative path to template file (from templatesDir)
+   * @returns {Function} Compiled Handlebars template function
+   * @throws {Error} If template file is not found
    */
   loadTemplate(templatePath) {
     const fullPath = path.join(this.options.templatesDir, templatePath);
@@ -79,9 +205,11 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Render a template with context
+   * Render a template with context variables.
+   *
    * @param {string} templatePath - Relative path to template
-   * @param {object} context - Template context variables
+   * @param {Object} [context={}] - Template context variables
+   * @returns {string} Rendered template string
    */
   renderTemplate(templatePath, context = {}) {
     const template = this.loadTemplate(templatePath);
@@ -89,9 +217,11 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Build tool definitions for Claude
-   * Tools are used for signaling completion and results
-   * @param {object[]} tools - Tool definitions
+   * Build a JSON schema for tool definitions.
+   * Used for structured output with Claude's --json-schema flag.
+   *
+   * @param {Object[]} tools - Array of tool definitions with name property
+   * @returns {Object|null} JSON schema object or null if no tools
    */
   buildToolSchema(tools) {
     if (!tools || tools.length === 0) {
@@ -119,7 +249,10 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Categorize an error for retry logic
+   * Categorize an error for retry logic.
+   *
+   * @param {Error|string} error - Error to categorize
+   * @returns {'TIMEOUT'|'TRANSIENT'|'PERMANENT'|'UNKNOWN'} Error category
    */
   categorizeError(error) {
     const errorStr = String(error).toLowerCase();
@@ -137,17 +270,37 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Sleep helper for retry delays
+   * Sleep helper for retry delays.
+   *
+   * @param {number} ms - Milliseconds to sleep
+   * @returns {Promise<void>} Resolves after delay
+   * @private
    */
   sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   /**
-   * Execute a prompt for an agent
+   * Execute a prompt for an agent with retry and fallback support.
+   * Invokes onStart, onComplete, onError, onRetry, and onFallback callbacks.
+   *
    * @param {string} agentName - Name of the agent
-   * @param {string} prompt - The prompt to send
-   * @param {object} options - Execution options
+   * @param {string} prompt - The prompt to send to Claude
+   * @param {Object} [options={}] - Execution options
+   * @param {string} [options.model] - Claude model to use (opus, sonnet, haiku)
+   * @param {string} [options.fallbackModel] - Fallback model if primary fails
+   * @param {number} [options.timeout] - Execution timeout in ms
+   * @param {number} [options.maxRetries] - Maximum retry attempts
+   * @param {number} [options.maxTurns] - Maximum conversation turns
+   * @param {Object} [options.jsonSchema] - JSON schema for structured output
+   * @param {string} [options.systemPrompt] - System prompt to prepend
+   * @param {string} [options.appendSystemPrompt] - System prompt to append
+   * @param {string|string[]} [options.tools] - Tools to enable
+   * @param {string|string[]} [options.allowedTools] - Allowed tools filter
+   * @param {string|string[]} [options.disallowedTools] - Disallowed tools filter
+   * @param {boolean} [options.newSession] - Force new session (don't resume)
+   * @returns {Promise<Object>} Execution result with response, sessionId, cost info
+   * @throws {Error} If execution fails after all retries
    */
   async execute(agentName, prompt, options = {}) {
     const maxRetries = options.maxRetries ?? this.options.maxRetries;
@@ -160,21 +313,21 @@ export class AgentExecutor extends EventEmitter {
     }
 
     // Signal execution start with the prompt
-    this.emit('start', { agentName, prompt });
+    this._invokeCallback('onStart', { agentName, prompt });
 
     while (attempt <= maxRetries) {
       try {
         const result = await this._executeOnce(agentName, prompt, options);
         this.metrics.totalCalls++;
         this.metrics.callsByAgent[agentName]++;
-        this.emit('complete', { agentName, result });
+        this._invokeCallback('onComplete', { agentName, result });
         return result;
       } catch (error) {
         lastError = error;
         const category = this.categorizeError(error);
 
         if (category === 'PERMANENT') {
-          this.emit('error', { agentName, error });
+          this._invokeCallback('onError', { agentName, error });
           throw error;
         }
 
@@ -188,7 +341,7 @@ export class AgentExecutor extends EventEmitter {
             console.log(`[AgentExecutor] ${agentName} retry ${attempt}/${maxRetries} after ${Math.round(delay)}ms: ${error.message}`);
           }
 
-          this.emit('retry', { agentName, attempt, maxRetries, delay, error: error.message, category });
+          this._invokeCallback('onRetry', { agentName, attempt, maxRetries, delay, error: error.message, category });
           await this.sleep(delay);
 
           // Try fallback model after first retry
@@ -198,18 +351,24 @@ export class AgentExecutor extends EventEmitter {
             }
             this.metrics.totalFallbacks++;
             options = { ...options, model: options.fallbackModel, _usingFallback: true };
-            this.emit('fallback', { agentName, model: options.fallbackModel });
+            this._invokeCallback('onFallback', { agentName, model: options.fallbackModel });
           }
         }
       }
     }
 
-    this.emit('error', { agentName, error: lastError });
+    this._invokeCallback('onError', { agentName, error: lastError });
     throw lastError;
   }
 
   /**
-   * Internal: Execute a single prompt without retry
+   * Execute a single prompt without retry logic.
+   *
+   * @private
+   * @param {string} agentName - Agent name
+   * @param {string} prompt - Prompt to execute
+   * @param {Object} options - Execution options
+   * @returns {Promise<Object>} Execution result
    */
   async _executeOnce(agentName, prompt, options = {}) {
     return new Promise((resolve, reject) => {
@@ -232,13 +391,13 @@ export class AgentExecutor extends EventEmitter {
       proc.stdout.on('data', (data) => {
         const chunk = data.toString();
         stdout += chunk;
-        this.emit('stdout', { agentName, chunk });
+        this._invokeCallback('onStdout', { agentName, chunk });
       });
 
       proc.stderr.on('data', (data) => {
         const chunk = data.toString();
         stderr += chunk;
-        this.emit('stderr', { agentName, chunk });
+        this._invokeCallback('onStderr', { agentName, chunk });
       });
 
       proc.on('error', (error) => {
@@ -286,7 +445,13 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Build CLI arguments
+   * Build CLI arguments for Claude Code invocation.
+   *
+   * @private
+   * @param {string} agentName - Agent name (used for session lookup)
+   * @param {string} prompt - Prompt text
+   * @param {Object} options - Execution options
+   * @returns {string[]} Array of CLI arguments
    */
   _buildArgs(agentName, prompt, options = {}) {
     const args = [];
@@ -355,7 +520,14 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Parse Claude Code output
+   * Parse Claude Code output into structured result.
+   *
+   * @private
+   * @param {string} agentName - Agent name
+   * @param {string} output - Raw stdout output
+   * @param {string} originalPrompt - Original prompt (for context)
+   * @param {Object} options - Execution options
+   * @returns {Object} Parsed result with response, sessionId, cost, toolCalls
    */
   _parseOutput(agentName, output, originalPrompt, options = {}) {
     try {
