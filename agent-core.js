@@ -821,7 +821,11 @@ class AgentCore extends EventEmitter {
       ...extras
     };
 
-    fs.writeFileSync(this.getStatePath(), JSON.stringify(state, null, 2));
+    // Use atomic write: write to temp file then rename
+    const statePath = this.getStatePath();
+    const tempPath = `${statePath}.tmp.${process.pid}`;
+    fs.writeFileSync(tempPath, JSON.stringify(state, null, 2));
+    fs.renameSync(tempPath, statePath);
 
     this._emitEvent(EventTypes.SNAPSHOT_SAVED, {
       source: 'core',
@@ -847,7 +851,13 @@ class AgentCore extends EventEmitter {
       return null;
     }
 
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    let state;
+    try {
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (err) {
+      // Handle corrupted/partial JSON (e.g., from incomplete writes)
+      return null;
+    }
 
     this.agents = state.agents || {};
     this.workflow = state.workflow || { active: false };
@@ -874,7 +884,12 @@ class AgentCore extends EventEmitter {
       return null;
     }
 
-    return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    try {
+      return JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (err) {
+      // Handle corrupted/partial JSON (e.g., from incomplete writes)
+      return null;
+    }
   }
 
   /**
@@ -884,7 +899,11 @@ class AgentCore extends EventEmitter {
    */
   saveConfiguration(config) {
     this.ensureStateDir();
-    fs.writeFileSync(this.getConfigPath(), JSON.stringify(config, null, 2));
+    // Use atomic write: write to temp file then rename
+    const configPath = this.getConfigPath();
+    const tempPath = `${configPath}.tmp.${process.pid}`;
+    fs.writeFileSync(tempPath, JSON.stringify(config, null, 2));
+    fs.renameSync(tempPath, configPath);
     return config;
   }
 
@@ -900,7 +919,14 @@ class AgentCore extends EventEmitter {
       return false;
     }
 
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    let state;
+    try {
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (err) {
+      // Handle corrupted/partial JSON (e.g., from incomplete writes)
+      return false;
+    }
+
     if (!state.workflow) {
       return false;
     }
@@ -927,7 +953,14 @@ class AgentCore extends EventEmitter {
       return null;
     }
 
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    let state;
+    try {
+      state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    } catch (err) {
+      // Handle corrupted/partial JSON (e.g., from incomplete writes)
+      return null;
+    }
+
     if (!state.workflow) {
       return null;
     }
