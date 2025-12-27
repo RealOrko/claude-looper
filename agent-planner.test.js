@@ -420,30 +420,28 @@ describe('PlannerAgent - Current and Next Task', () => {
     assert.strictEqual(current.id, task.id);
   });
 
-  it('should get next pending task sorted by dependencies', () => {
+  it('should get next pending task in order', () => {
     const goal = agentCore.setGoal('planner', 'Test goal');
 
     const task1 = agentCore.addTask('planner', {
-      description: 'Task with dependencies',
+      description: 'First task',
       parentGoalId: goal.id,
-      status: TASK_STATUS.PENDING,
-      metadata: { dependencies: [1] }
+      status: TASK_STATUS.PENDING
     });
 
     const task2 = agentCore.addTask('planner', {
-      description: 'Task without dependencies',
+      description: 'Second task',
       parentGoalId: goal.id,
-      status: TASK_STATUS.PENDING,
-      metadata: { dependencies: [] }
+      status: TASK_STATUS.PENDING
     });
 
     planner.currentPlan = { goalId: goal.id, tasks: [task1, task2] };
 
     const next = planner.getNextTask();
 
-    // Task without dependencies should be returned first
+    // First pending task in order should be returned
     assert.ok(next);
-    assert.strictEqual(next.id, task2.id);
+    assert.strictEqual(next.id, task1.id);
   });
 });
 

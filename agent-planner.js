@@ -381,37 +381,15 @@ export class PlannerAgent {
   }
 
   /**
-   * Get the next pending task
+   * Get the next pending task (first pending task in order)
    */
   getNextTask() {
     if (!this.currentPlan) return null;
 
-    const tasks = this.agent.tasks.filter(t =>
+    return this.agent.tasks.find(t =>
       t.status === TASK_STATUS.PENDING &&
       t.parentGoalId === this.currentPlan.goalId
-    );
-
-    // Sort by dependencies (tasks with fewer/no dependencies first)
-    tasks.sort((a, b) => {
-      const aDeps = a.metadata?.dependencies?.length || 0;
-      const bDeps = b.metadata?.dependencies?.length || 0;
-      return aDeps - bDeps;
-    });
-
-    // Check if dependencies are satisfied
-    for (const task of tasks) {
-      const deps = task.metadata?.dependencies || [];
-      const allDepsSatisfied = deps.every(depIndex => {
-        const depTask = this.currentPlan.tasks[depIndex];
-        return depTask?.status === TASK_STATUS.COMPLETED;
-      });
-
-      if (allDepsSatisfied) {
-        return task;
-      }
-    }
-
-    return null;
+    ) || null;
   }
 
   /**

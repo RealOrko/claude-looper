@@ -42,7 +42,7 @@ async function runInDocker(args) {
   // Build docker run command
   const dockerArgs = [
     'run',
-    '--rm',
+    //'--rm',
     '-it',
     // Use host network for better connectivity
     '--network=host',
