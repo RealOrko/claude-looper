@@ -173,30 +173,38 @@ async function startMain() {
       }
     });
 
-    // Handle graceful shutdown with state preservation
-    const cleanup = (signal) => {
-      // Save state before exiting
+    // Handle graceful shutdown with state preservation (only for signals/interrupts)
+    const abortAndExit = (signal) => {
+      // Only abort workflow when actually interrupted by signal
       try {
         orchestrator.abort();
         agentCore.snapshot();
       } catch (e) {
         // Ignore errors during cleanup
       }
-      // Clear executor callbacks
+      cleanupUI();
+      console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
+      process.exit(130); // 128 + SIGINT(2)
+    };
+
+    // Clean up UI resources without aborting workflow
+    const cleanupUI = () => {
       agentExecutor.clearCallbacks();
       if (ui) {
         ui.shutdown();
       }
-      if (signal) {
-        console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
-        process.exit(130); // 128 + SIGINT(2)
-      }
     };
 
-    process.on('SIGINT', () => cleanup('SIGINT'));
-    process.on('SIGTERM', () => cleanup('SIGTERM'));
+    process.on('SIGINT', () => abortAndExit('SIGINT'));
+    process.on('SIGTERM', () => abortAndExit('SIGTERM'));
     process.on('uncaughtException', (err) => {
-      cleanup();
+      // For uncaught exceptions, save state but mark as failed, not aborted
+      try {
+        agentCore.snapshot();
+      } catch (e) {
+        // Ignore errors during cleanup
+      }
+      cleanupUI();
       console.error('Uncaught exception:', err);
       process.exit(1);
     });
@@ -208,10 +216,10 @@ async function startMain() {
       }
     }, 100);
 
-    // Return cleanup function
+    // Return cleanup function for normal completion (doesn't abort)
     return () => {
       clearInterval(phaseCheck);
-      cleanup();
+      cleanupUI();
     };
   }
 
