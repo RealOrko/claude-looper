@@ -459,39 +459,84 @@ export class Orchestrator {
   async _executeExecutionPhase(plan) {
     this._log(`[Orchestrator] Starting execution phase`);
 
-    let task = this.agents.planner.getNextTask();
+    const maxGoalIterations = this.config.execution.maxGoalIterations || 5;
+    let goalIteration = 0;
 
-    while (task) {
-      this._log(`[Orchestrator] Executing task: ${task.description}`);
+    // Outer loop: keep iterating until goal is complete or max iterations reached
+    while (goalIteration < maxGoalIterations) {
+      goalIteration++;
+      this._log(`[Orchestrator] Goal iteration ${goalIteration}/${maxGoalIterations}`);
 
-      // Update task status
-      agentCore.updateTask('planner', task.id, { status: 'in_progress' });
+      // Inner loop: process all pending tasks
+      let task = this.agents.planner.getNextTask();
 
-      // Execute task with fix cycle
-      const success = await this._executeTaskWithFixCycle(task);
+      while (task) {
+        this._log(`[Orchestrator] Executing task: ${task.description}`);
 
-      if (success) {
-        this.agents.planner.markTaskComplete(task.id, { completedAt: Date.now() });
-      } else {
-        const { needsReplan } = this.agents.planner.markTaskFailed(task.id, 'Max attempts exceeded');
+        // Update task status
+        agentCore.updateTask('planner', task.id, { status: 'in_progress' });
 
-        if (needsReplan) {
-          this._log(`[Orchestrator] Task needs re-planning`);
-          await this.agents.planner.replan(task, 'Max attempts exceeded');
+        // Execute task with fix cycle
+        const success = await this._executeTaskWithFixCycle(task);
+
+        if (success) {
+          this.agents.planner.markTaskComplete(task.id, { completedAt: Date.now() });
+        } else {
+          const { needsReplan } = this.agents.planner.markTaskFailed(task.id, 'Max attempts exceeded');
+
+          if (needsReplan) {
+            this._log(`[Orchestrator] Task needs re-planning`);
+            await this.agents.planner.replan(task, 'Max attempts exceeded');
+          } else {
+            // Mark as evaluated so we don't force replan later
+            agentCore.updateTask('planner', task.id, {
+              metadata: { ...task.metadata, replanEvaluated: true }
+            });
+          }
         }
+
+        // Snapshot after each task for resumability
+        this._snapshot();
+
+        // Check time budget
+        if (this._isTimeBudgetExceeded()) {
+          this._log(`[Orchestrator] Time budget exceeded`);
+          break;
+        }
+
+        // Get next task
+        task = this.agents.planner.getNextTask();
       }
 
-      // Snapshot after each task for resumability
-      this._snapshot();
-
-      // Check time budget
+      // Check if time budget exceeded
       if (this._isTimeBudgetExceeded()) {
-        this._log(`[Orchestrator] Time budget exceeded`);
         break;
       }
 
-      // Get next task
-      task = this.agents.planner.getNextTask();
+      // Check for failed tasks that could benefit from retry
+      const goalId = this.agents.planner.currentPlan?.goalId;
+      const failedTasks = this.agents.planner.agent.tasks.filter(
+        t => t.status === 'failed' &&
+             t.parentGoalId === goalId &&
+             !t.metadata?.replanEvaluated &&
+             (t.attempts || 0) < (this.config.planner?.settings?.attemptsBeforeReplan || 3)
+      );
+
+      if (failedTasks.length === 0) {
+        this._log(`[Orchestrator] All tasks completed or exhausted retries`);
+        break;
+      }
+
+      this._log(`[Orchestrator] ${failedTasks.length} failed task(s) - forcing replan`);
+
+      // Force replan on failed tasks (creates subtasks that become pending)
+      for (const failedTask of failedTasks) {
+        await this.agents.planner.replan(failedTask, `Retry iteration ${goalIteration}`);
+      }
+    }
+
+    if (goalIteration >= maxGoalIterations) {
+      this._log(`[Orchestrator] Max goal iterations reached with incomplete tasks`);
     }
 
     this._log(`[Orchestrator] Execution phase complete`);
