@@ -8,7 +8,7 @@
  * - Quality standards are met
  */
 
-import agentCore, { EventTypes } from './agent-core.js';
+import agentCore from './agent-core.js';
 import agentExecutor from './agent-executor.js';
 
 // Quality thresholds for verification

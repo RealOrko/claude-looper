@@ -8,7 +8,7 @@
  * - Coordinates agent interactions
  */
 
-import agentCore, { EventTypes } from './agent-core.js';
+import agentCore from './agent-core.js';
 import agentExecutor from './agent-executor.js';
 import { PlannerAgent } from './agent-planner.js';
 import { CoderAgent } from './agent-coder.js';

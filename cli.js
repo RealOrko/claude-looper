@@ -46,6 +46,9 @@ async function runInDocker(args) {
     '-it',
     // Use host network for better connectivity
     '--network=host',
+    // Resource limits to prevent host machine exhaustion
+    '--memory=4g',
+    '--cpus=2',
     // Mount current directory as workspace
     '-v', `${cwd}:/home/claude/workspace`,
     // Mount ~/.claude for credentials (read-write since Claude Code writes debug logs)
