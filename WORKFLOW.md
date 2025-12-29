@@ -19,16 +19,17 @@ Multi-agent workflow orchestrated by Claude Looper with intelligent diagnosis an
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 💪 Core Philosophy: Iterate Until Done
+## 💪 Core Philosophy: Autonomous Iteration Until Done
 
-Claude Looper **never gives up arbitrarily**. The only valid terminations are:
+Claude Looper **runs autonomously** and **never gives up arbitrarily**. The only valid terminations are:
 
 | Outcome | Description |
 |---------|-------------|
 | ✅ **Goal achieved** | Success! |
-| ❌ **Goal impossible** | Supervisor determines it can't be done |
-| ❓ **Clarification needed** | User input required |
+| ❌ **Goal impossible** | All recovery options exhausted (retries, replans, pivots) |
 | 🛑 **User abort** | Manual intervention |
+
+> **Note**: The system does not pause for clarification. If a task is ambiguous, it will try different approaches (PIVOT) until it succeeds or exhausts all options.
 
 ## 📋 Workflow Phases
 
@@ -79,13 +80,13 @@ Claude Looper **never gives up arbitrarily**. The only valid terminations are:
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │           👁️ SUPERVISOR DIAGNOSIS                        │   │
 │  │                                                          │   │
-│  │  ┌───────┐ ┌────────┐ ┌───────┐ ┌──────────┐ ┌───────┐  │   │
-│  │  │🔄RETRY│ │📋REPLAN│ │🔀PIVOT│ │❌IMPOSSIBLE│ │❓ASK  │  │   │
-│  │  └───┬───┘ └───┬────┘ └───┬───┘ └─────┬────┘ └───┬───┘  │   │
-│  │      ▼         ▼          ▼           ▼          ▼      │   │
-│  │   Reset to   Break      Fresh       Stop       Pause    │   │
-│  │   pending    subtasks   plan        with       for      │   │
-│  │                                     reason     input    │   │
+│  │  ┌───────┐ ┌────────┐ ┌───────┐ ┌──────────┐            │   │
+│  │  │🔄RETRY│ │📋REPLAN│ │🔀PIVOT│ │❌IMPOSSIBLE│            │   │
+│  │  └───┬───┘ └───┬────┘ └───┬───┘ └─────┬────┘            │   │
+│  │      ▼         ▼          ▼           ▼                 │   │
+│  │   Reset to   Break      Fresh       Stop                │   │
+│  │   pending    subtasks   plan        execution           │   │
+│  │   (max 3)    (depth 3)  (max 3)                         │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                            │                                   │
 │              Continue loop (unless stopped)                    │
@@ -98,6 +99,81 @@ Claude Looper **never gives up arbitrarily**. The only valid terminations are:
                                                     └──▶ ❌ FAILED
 ```
 
+## 🏛️ Hierarchical Verification Scope
+
+The Supervisor evaluates work at each level against its **immediate parent**, not the overall goal:
+
+```
+🎯 Goal
+   └── verified against: Goal's success criteria
+       │
+📋 Plan
+   └── verified against: Does it achieve the goal?
+       │
+📝 Task
+   └── verified against: Task's own criteria (goal is context only)
+       │
+📝 Subtask
+   └── verified against: Parent Task's criteria (goal is irrelevant)
+```
+
+### Why Hierarchical Scope Matters
+
+| Wrong Approach | Correct Approach |
+|---------------|------------------|
+| Subtask rejected because "goal not achieved" | Subtask approved because it satisfies parent task |
+| Task rejected because "other tasks incomplete" | Task approved because it meets its own criteria |
+| Endless retry loops | Clean progression through task hierarchy |
+
+### Scope Rules
+
+| Level | Evaluate Against | Ignore |
+|-------|-----------------|--------|
+| Subtask | Parent task's requirements | Overall goal |
+| Task | Task's own verification criteria | Other tasks, overall goal completion |
+| Plan | Goal requirements | Individual task details |
+
+## 🔒 Hard Escalation Limits
+
+The system enforces hard limits to prevent infinite loops:
+
+```
+Task Fails
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│  attempts < maxStepAttempts (3)?                        │
+│     YES → Allow RETRY                                   │
+│     NO  → Escalate to REPLAN                           │
+└─────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│  replanDepth < maxReplanDepth (3)?                      │
+│     YES → Allow REPLAN                                  │
+│     NO  → Escalate to PIVOT                            │
+└─────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────┐
+│  pivotCount < maxPivots (3)?                            │
+│     YES → Allow PIVOT                                   │
+│     NO  → Mark as IMPOSSIBLE                           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Maximum Attempts Before IMPOSSIBLE
+
+Worst case: **3 retries × 3 replan depths × 3 pivots = 27 task execution attempts**
+
+### Escalation Chain
+
+| Exhausted | Escalates To |
+|-----------|--------------|
+| Retries (3) | REPLAN |
+| Replan depth (3) | PIVOT |
+| Pivots (3) | IMPOSSIBLE |
+
 ## 🔍 Supervisor Diagnosis Decisions
 
 | Decision | When Used | Action |
@@ -105,17 +181,20 @@ Claude Looper **never gives up arbitrarily**. The only valid terminations are:
 | 🔄 **RETRY** | Transient error (network, timing) | Reset task, try again |
 | 📋 **REPLAN** | Task too complex | Break into subtasks |
 | 🔀 **PIVOT** | Approach is wrong | Fresh plan, new strategy |
-| ❌ **IMPOSSIBLE** | Goal cannot be achieved | Stop with explanation |
-| ❓ **CLARIFY** | Requirements ambiguous | Pause for user input |
+| ❌ **IMPOSSIBLE** | Task cannot be achieved | Stop with explanation |
+
+> **Note**: The system runs autonomously. If the LLM suggests CLARIFY, it's converted to PIVOT (try different approach) until pivots are exhausted, then IMPOSSIBLE.
 
 ### 📊 Diagnosis Context
 
 The Supervisor receives:
-- 🎯 Original goal
-- 📝 Failed task description
+- 🎯 Original goal (context only)
+- 📝 Failed task/subtask description
+- 👆 Parent task (for subtasks - this is the evaluation target)
 - 📜 Complete attempt history
 - 📊 Current state (completed/failed/pending)
-- 🌳 Replan depth
+- 🌳 Replan depth and max
+- 🔀 Pivot count and max
 
 ## 🔀 State Transitions
 
@@ -142,9 +221,11 @@ The Supervisor receives:
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `maxFixCycles` | 3 | Fix attempts per task |
+| `maxStepAttempts` | 3 | Retry attempts per task before escalating to REPLAN |
+| `maxFixCycles` | 3 | Fix attempts per task within coder/tester loop |
 | `maxPlanRevisions` | 3 | Plan revision attempts |
-| `maxReplanDepth` | 3 | Max subtask nesting |
+| `maxReplanDepth` | 3 | Max subtask nesting before escalating to PIVOT |
+| `maxPivots` | 3 | Fresh plan attempts before marking IMPOSSIBLE |
 | `timeLimit` | 2h | Max execution time |
 | `approval threshold` | 70 | Min score to approve |
 
