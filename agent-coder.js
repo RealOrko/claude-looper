@@ -106,7 +106,7 @@ export class CoderAgent {
    * @param {object} context - Implementation context
    */
   async implement(task, context = {}) {
-    const { goal, completedTasks, codeContext } = context;
+    const { goal, completedTasks, codeContext, previousAttempts } = context;
 
     const templateContext = {
       goal,
@@ -118,7 +118,14 @@ export class CoderAgent {
         description: t.description,
         status: t.status
       })),
-      codeContext
+      codeContext,
+      // Include previous attempts so coder can learn from supervisor feedback
+      previousAttempts: previousAttempts?.map(a => ({
+        attemptNumber: a.attemptNumber,
+        approach: a.approach,
+        result: a.result,
+        feedback: a.error // supervisor feedback is stored in error field
+      }))
     };
 
     const jsonSchema = {

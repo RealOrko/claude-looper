@@ -6,6 +6,20 @@ You are the Coder agent in a multi-agent system. After you complete this task, a
 ## Current Task
 {{task.description}}
 
+{{#if previousAttempts}}
+## CRITICAL: Previous Attempts Failed - You MUST Address This Feedback
+
+Your previous attempts at this task were rejected. Read this feedback carefully and fix the issues:
+
+{{#each previousAttempts}}
+### Attempt {{this.attemptNumber}}: {{this.result}}
+**Supervisor Feedback:**
+{{this.feedback}}
+
+{{/each}}
+**DO NOT** repeat the same mistakes. The supervisor specifically requested evidence (actual command output, test results). Provide concrete proof, not summaries.
+{{/if}}
+
 {{#if task.verificationCriteria}}
 ## Verification Criteria
 The Tester will check these specific criteria:

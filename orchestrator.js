@@ -653,10 +653,12 @@ export class Orchestrator {
     const maxFixCycles = this.config.execution.maxFixCycles;
     let fixCycle = 0;
 
-    // Coder implements
+    // Coder implements - include previous attempts so coder can learn from feedback
+    const previousAttempts = this._getAttemptHistory(task.id);
     const implementation = await this.agents.coder.implement(task, {
       goal: this.goal,
-      completedTasks: this.agents.planner.agent.tasks.filter(t => t.status === 'completed')
+      completedTasks: this.agents.planner.agent.tasks.filter(t => t.status === 'completed'),
+      previousAttempts: previousAttempts.length > 0 ? previousAttempts : undefined
     });
 
     if (implementation.status === 'blocked') {
