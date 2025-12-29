@@ -1837,7 +1837,7 @@ export class TerminalUIMultiView {
     const desc = this._truncate(task.description || 'Task', descMaxWidth);
 
     // Use bold for selection (no >> marker)
-    const line = `   {gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
+    const line = `{gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
     lines.push(isSelected ? `{bold}${line}{/bold}` : line);
   }
 
