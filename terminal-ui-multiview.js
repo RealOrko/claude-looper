@@ -2867,35 +2867,9 @@ export class TerminalUIMultiView {
     const lines = this.jsonBuffer.split('\n');
     this.jsonBuffer = lines.pop() || '';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-
-      try {
-        const data = JSON.parse(trimmed);
-
-        // Extract content from various formats
-        if (data.content) {
-          const content = typeof data.content === 'string'
-            ? data.content
-            : JSON.stringify(data.content);
-
-          this.historyStore.addResponse(agentName, content, {
-            taskId: this.currentTaskId,
-            toolCalls: data.toolCalls || []
-          });
-        }
-
-        // Handle tool calls
-        if (data.type === 'tool_use' && data.name) {
-          this.historyStore.addToolCall(agentName, data.name, data.input, {
-            taskId: this.currentTaskId
-          });
-        }
-      } catch {
-        // Not JSON, ignore
-      }
-    }
+    // Note: We no longer record responses/tool calls here during streaming.
+    // Recording is now done in recordAgentResult() when execution completes,
+    // which receives the properly parsed result and avoids duplicates.
 
     if (this.initialized && this.currentView === ViewTypes.TIMELINE) {
       this._refreshCurrentView();
