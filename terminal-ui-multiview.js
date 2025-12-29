@@ -2913,6 +2913,45 @@ export class TerminalUIMultiView {
   }
 
   /**
+   * Record agent execution result (response and tool calls)
+   * Called when an agent completes execution
+   */
+  recordAgentResult(agentName, result) {
+    if (!result) return;
+
+    // Record the response
+    if (result.response) {
+      this.historyStore.addResponse(agentName, result.response, {
+        taskId: this.currentTaskId,
+        costUsd: result.costUsd,
+        duration: result.duration,
+        tokensIn: result.tokensIn,
+        tokensOut: result.tokensOut
+      });
+    }
+
+    // Record tool calls from structuredOutput or toolCalls array
+    const toolCalls = result.toolCalls || [];
+    if (result.structuredOutput?.toolCall) {
+      toolCalls.push(result.structuredOutput.toolCall);
+    }
+
+    for (const toolCall of toolCalls) {
+      if (toolCall.name) {
+        this.historyStore.addToolCall(agentName, toolCall.name, toolCall.arguments || toolCall.input || {}, {
+          taskId: this.currentTaskId
+        });
+      }
+    }
+
+    // Refresh view if on communication view
+    if (this.initialized && this.currentView === ViewTypes.COMMUNICATION) {
+      this._refreshCurrentView();
+      this.screen.render();
+    }
+  }
+
+  /**
    * Add event (stores to history)
    */
   addEvent(source, message) {

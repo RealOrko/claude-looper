@@ -198,8 +198,12 @@ async function startMain() {
           ui.showAgentPrompt(agentName, prompt);
         }
       },
-      onComplete: () => {
+      onComplete: ({ agentName, result }) => {
         ui.setBusy(false);
+        // Record the response and tool calls from the completed execution
+        if (result) {
+          ui.recordAgentResult(agentName, result);
+        }
       },
       onError: () => {
         ui.setBusy(false);
