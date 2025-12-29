@@ -7,7 +7,6 @@
  *   claude-looper "Your goal description"
  *   claude-looper --resume
  *   claude-looper --status
- *   claude-looper --no-ui "goal"  (disable terminal UI)
  *   claude-looper --docker "goal" (run inside Docker container)
  */
 
@@ -37,16 +36,21 @@ async function runInDocker(args) {
   // ANSI color codes
   const cyan = '\x1b[36m';
   const gray = '\x1b[90m';
+  const red = '\x1b[31m';
   const reset = '\x1b[0m';
 
-  // Build docker run command
   // Only allocate TTY if parent has one, otherwise UI won't work
   const hasTTY = process.stdin.isTTY && process.stdout.isTTY;
+
+  if (!hasTTY) {
+    console.error(`${red}Error: TTY required for UI. Run in an interactive terminal.${reset}`);
+    return 1;
+  }
+
+  // Build docker run command
   const dockerArgs = [
     'run',
-    //'--rm',
-    // -i keeps stdin open, -t allocates pseudo-TTY (only if parent has TTY)
-    ...(hasTTY ? ['-it'] : ['-i']),
+    '-it',
     // Use host network for better connectivity
     '--network=host',
     // Resource limits to prevent host machine exhaustion
@@ -77,12 +81,9 @@ async function runInDocker(args) {
   dockerArgs.push('claude');
 
   // Run claude-looper with the passed arguments
-  // If no TTY, ensure --no-ui is passed to prevent UI initialization failures
-  const containerArgs = hasTTY ? args : (args.includes('--no-ui') ? args : ['--no-ui', ...args]);
-  dockerArgs.push('claude-looper', ...containerArgs);
+  dockerArgs.push('claude-looper', ...args);
 
   console.log(`${cyan}→ Running in docker container...${reset}`);
-  console.log(`${gray}  TTY mode: ${hasTTY ? 'enabled (UI available)' : 'disabled (text mode)'}${reset}`);
   console.log(`${gray}  Mounting: ${cwd} -> /home/claude/workspace${reset}`);
   console.log(`${gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${reset}`);
   if (fs.existsSync(sshDir)) {
@@ -116,12 +117,37 @@ async function startMain() {
   const { EventTypes } = agentCoreModule;
   const agentExecutorModule = await import('./agent-executor.js');
   const agentExecutor = agentExecutorModule.default;
-  const { TerminalUI } = await import('./terminal-ui.js');
+  const { TerminalUIMultiView: TerminalUI } = await import('./terminal-ui-multiview.js');
 
   const args = process.argv.slice(2);
-  // UI requires a TTY - check both stdin and stdout
+
+  // Handle --status flag (no UI needed, quick exit)
+  if (args.includes('--status')) {
+    if (agentCore.canResume()) {
+      const resumeInfo = agentCore.getResumeInfo();
+      console.log('Saved Workflow State:');
+      console.log(`  Goal: ${resumeInfo.goal}`);
+      console.log(`  Status: ${resumeInfo.status}`);
+      console.log(`  Tasks: ${resumeInfo.tasks.completed}/${resumeInfo.tasks.total} completed`);
+      if (resumeInfo.tasks.failed > 0) {
+        console.log(`  Failed: ${resumeInfo.tasks.failed} tasks`);
+      }
+      if (resumeInfo.tasks.pending > 0) {
+        console.log(`  Pending: ${resumeInfo.tasks.pending} tasks`);
+      }
+      console.log(`\nRun with --resume to continue this workflow.`);
+    } else {
+      console.log('No saved workflow state.');
+    }
+    return;
+  }
+
+  // UI requires a TTY
   const hasTTY = process.stdin.isTTY && process.stdout.isTTY;
-  const useUI = !args.includes('--no-ui') && hasTTY;
+  if (!hasTTY) {
+    console.error('Error: TTY required for UI. Run in an interactive terminal.');
+    process.exit(1);
+  }
 
   /**
    * Set up UI event handlers for both execute and resume flows
@@ -198,13 +224,12 @@ async function startMain() {
       } catch (e) {
         // Ignore errors during cleanup
       }
-      cleanupUI();
-      console.log(`\nWorkflow interrupted. Run with --resume to continue.`);
+      cleanupUIResources();
       process.exit(130); // 128 + SIGINT(2)
     };
 
     // Clean up UI resources without aborting workflow
-    const cleanupUI = () => {
+    const cleanupUIResources = () => {
       agentExecutor.clearCallbacks();
       if (ui) {
         ui.shutdown();
@@ -220,7 +245,7 @@ async function startMain() {
       } catch (e) {
         // Ignore errors during cleanup
       }
-      cleanupUI();
+      cleanupUIResources();
       console.error('Uncaught exception:', err);
       process.exit(1);
     });
@@ -235,110 +260,53 @@ async function startMain() {
     // Return cleanup function for normal completion (doesn't abort)
     return () => {
       clearInterval(phaseCheck);
-      cleanupUI();
+      agentExecutor.clearCallbacks();
     };
   }
 
-  // Enable silent mode when UI is active to prevent console output interfering
-  const orchestrator = new Orchestrator({ silent: useUI });
+  // Enable silent mode to prevent console output interfering with UI
+  const orchestrator = new Orchestrator({ silent: true });
   let ui = null;
   let cleanupUI = null;
-
-  // Handle --status flag (no UI, quick exit)
-  if (args.includes('--status')) {
-    if (agentCore.canResume()) {
-      const resumeInfo = agentCore.getResumeInfo();
-      console.log('Saved Workflow State:');
-      console.log(`  Goal: ${resumeInfo.goal}`);
-      console.log(`  Status: ${resumeInfo.status}`);
-      console.log(`  Tasks: ${resumeInfo.tasks.completed}/${resumeInfo.tasks.total} completed`);
-      if (resumeInfo.tasks.failed > 0) {
-        console.log(`  Failed: ${resumeInfo.tasks.failed} tasks`);
-      }
-      if (resumeInfo.tasks.pending > 0) {
-        console.log(`  Pending: ${resumeInfo.tasks.pending} tasks`);
-      }
-      console.log(`\nRun with --resume to continue this workflow.`);
-    } else {
-      console.log('No saved workflow state.');
-    }
-    return;
-  }
 
   // Handle --resume flag
   if (args.includes('--resume')) {
     if (!agentCore.canResume()) {
-      console.log('No saved state to resume from.');
+      console.error('No saved state to resume from.');
       process.exit(1);
     }
 
-    const resumeInfo = agentCore.getResumeInfo();
+    try {
+      ui = new TerminalUI();
+      await ui.init();
+      cleanupUI = setupUIEventHandlers(ui, orchestrator);
 
-    if (!useUI) {
-      console.log('Resuming workflow...');
-      console.log(`  Goal: ${resumeInfo.goal}`);
-      console.log(`  Previous status: ${resumeInfo.status}`);
-      console.log(`  Tasks: ${resumeInfo.tasks.completed}/${resumeInfo.tasks.total} completed, ${resumeInfo.tasks.failed} failed`);
-      console.log('---');
-    }
-
-    // Initialize UI if enabled
-    if (useUI) {
-      try {
-        ui = new TerminalUI();
-        await ui.init();
-        cleanupUI = setupUIEventHandlers(ui, orchestrator);
-
-        // Show initial tasks from saved state
-        const state = agentCore.loadSnapshot();
-        if (state?.agents?.planner?.tasks) {
-          // Find current and next tasks from saved state
-          const tasks = state.agents.planner.tasks;
-          const currentTask = tasks.find(t => t.status === 'in_progress');
-          const pendingTasks = tasks.filter(t => t.status === 'pending');
-          const nextTask = pendingTasks[0]; // First pending task
-          ui.updateTasks(tasks, {
-            currentTaskId: currentTask?.id,
-            nextTaskId: nextTask?.id
-          });
-        }
-        ui.setPhase('execution');
-      } catch (uiError) {
-        // Fall back to non-UI mode if terminal UI fails to initialize
-        console.log(`Note: Terminal UI unavailable (${uiError.message}), using text mode.`);
-        ui = null;
-        console.log('Resuming workflow...');
-        console.log(`  Goal: ${resumeInfo.goal}`);
-        console.log(`  Previous status: ${resumeInfo.status}`);
-        console.log(`  Tasks: ${resumeInfo.tasks.completed}/${resumeInfo.tasks.total} completed, ${resumeInfo.tasks.failed} failed`);
-        console.log('---');
+      // Show initial tasks from saved state
+      const state = agentCore.loadSnapshot();
+      if (state?.agents?.planner?.tasks) {
+        const tasks = state.agents.planner.tasks;
+        const currentTask = tasks.find(t => t.status === 'in_progress');
+        const pendingTasks = tasks.filter(t => t.status === 'pending');
+        const nextTask = pendingTasks[0];
+        ui.updateTasks(tasks, {
+          currentTaskId: currentTask?.id,
+          nextTaskId: nextTask?.id
+        });
       }
+      ui.setPhase('execution');
+    } catch (uiError) {
+      console.error(`Failed to initialize UI: ${uiError.message}`);
+      process.exit(1);
     }
 
     try {
       const result = await orchestrator.resumeExecution();
-
       if (cleanupUI) cleanupUI();
-      if (ui) ui.shutdown();
-
-      console.log('---');
-      console.log(`Workflow ${result.success ? 'COMPLETED' : 'FAILED'} (resumed)`);
-      console.log(`Duration: ${Math.round(result.duration / 1000)}s`);
-      console.log(`Status: ${result.status}`);
-
-      if (result.summary) {
-        console.log('\nAgent Summary:');
-        for (const agent of result.summary.agents) {
-          console.log(`  ${agent.name}: ${agent.completedTasks}/${agent.taskCount} tasks`);
-        }
-      }
-
+      await ui.waitForExit(result.success, result.duration);
       process.exit(result.success ? 0 : 1);
     } catch (error) {
       if (cleanupUI) cleanupUI();
-      if (ui) ui.shutdown();
-      console.error(`Resume failed: ${error.message}`);
-      console.log('State saved. You can try resuming again with --resume');
+      await ui.waitForExit(false, 0);
       process.exit(1);
     }
   }
@@ -350,53 +318,28 @@ async function startMain() {
     console.log('Usage: claude-looper "Your goal description"');
     console.log('       claude-looper --resume');
     console.log('       claude-looper --status');
-    console.log('       claude-looper --no-ui "goal"');
     console.log('       claude-looper --docker "goal"');
     process.exit(1);
   }
 
-  // Initialize UI if enabled
-  if (useUI) {
-    try {
-      ui = new TerminalUI();
-      await ui.init();
-      cleanupUI = setupUIEventHandlers(ui, orchestrator);
-    } catch (uiError) {
-      // Fall back to non-UI mode if terminal UI fails to initialize
-      console.log(`Note: Terminal UI unavailable (${uiError.message}), using text mode.`);
-      ui = null;
-      console.log(`Starting workflow for goal: ${goal}`);
-      console.log('---');
-    }
-  } else {
-    console.log(`Starting workflow for goal: ${goal}`);
-    console.log('---');
+  // Initialize UI
+  try {
+    ui = new TerminalUI();
+    await ui.init();
+    cleanupUI = setupUIEventHandlers(ui, orchestrator);
+  } catch (uiError) {
+    console.error(`Failed to initialize UI: ${uiError.message}`);
+    process.exit(1);
   }
 
   try {
     const result = await orchestrator.execute(goal);
-
-    // Cleanup UI before showing results
     if (cleanupUI) cleanupUI();
-    if (ui) ui.shutdown();
-
-    console.log('---');
-    console.log(`Workflow ${result.success ? 'COMPLETED' : 'FAILED'}`);
-    console.log(`Duration: ${Math.round(result.duration / 1000)}s`);
-    console.log(`Status: ${result.status}`);
-
-    if (result.summary) {
-      console.log('\nAgent Summary:');
-      for (const agent of result.summary.agents) {
-        console.log(`  ${agent.name}: ${agent.completedTasks}/${agent.taskCount} tasks`);
-      }
-    }
-
+    await ui.waitForExit(result.success, result.duration);
     process.exit(result.success ? 0 : 1);
   } catch (error) {
     if (cleanupUI) cleanupUI();
-    if (ui) ui.shutdown();
-    console.error(`Error: ${error.message}`);
+    await ui.waitForExit(false, 0);
     process.exit(1);
   }
 }

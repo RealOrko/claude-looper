@@ -494,6 +494,14 @@ export class Orchestrator {
         continue;
       }
 
+      // Proactively break down complex tasks before executing
+      if (task.metadata?.complexity === 'complex' && (!task.subtasks || task.subtasks.length === 0)) {
+        this._log(`[Orchestrator] Complex task detected, breaking into subtasks: ${task.description}`);
+        await this.agents.planner.replan(task, 'Proactive breakdown of complex task');
+        // Continue loop to pick up the new subtasks
+        continue;
+      }
+
       this._log(`[Orchestrator] Executing task: ${task.description}`);
 
       // Update task status

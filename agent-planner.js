@@ -381,15 +381,48 @@ export class PlannerAgent {
   }
 
   /**
-   * Get the next pending task (first pending task in order)
+   * Get the next pending task (respects hierarchy - subtasks before siblings)
    */
   getNextTask() {
     if (!this.currentPlan) return null;
 
-    return this.agent.tasks.find(t =>
-      t.status === TASK_STATUS.PENDING &&
-      t.parentGoalId === this.currentPlan.goalId
-    ) || null;
+    const goalTasks = this.agent.tasks.filter(t => t.parentGoalId === this.currentPlan.goalId);
+
+    // Build a map of task ID to task
+    const taskMap = new Map();
+    for (const t of goalTasks) {
+      taskMap.set(t.id, t);
+    }
+
+    // Find root tasks (no parent or parent not in this goal)
+    const roots = goalTasks.filter(t => !t.parentTaskId || !taskMap.has(t.parentTaskId));
+
+    // Recursively find first pending task (depth-first)
+    const findPending = (task) => {
+      // If this task is pending, return it
+      if (task.status === TASK_STATUS.PENDING) {
+        return task;
+      }
+      // If blocked/in_progress with subtasks, check subtasks first
+      if (task.subtasks && task.subtasks.length > 0) {
+        for (const subId of task.subtasks) {
+          const sub = taskMap.get(subId);
+          if (sub) {
+            const found = findPending(sub);
+            if (found) return found;
+          }
+        }
+      }
+      return null;
+    };
+
+    // Check each root task in order
+    for (const root of roots) {
+      const found = findPending(root);
+      if (found) return found;
+    }
+
+    return null;
   }
 
   /**

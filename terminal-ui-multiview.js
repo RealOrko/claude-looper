@@ -1,15 +1,12 @@
 /**
  * Terminal UI Multi-View - Enhanced terminal interface with tabbed navigation
  *
- * Provides 5 distinct views accessible via keyboard shortcuts:
- * 1. Execution Timeline (F1) - Chronological workflow activity
- * 2. Prompt History (F2) - All agent prompts and responses
- * 3. Task Graph (F3) - Task hierarchy with dependencies
- * 4. Agent Communication (F4) - Inter-agent messages
- * 5. Event Log (F5) - System events and state changes
+ * Provides 3 views accessible via Tab/Shift+Tab:
+ * 1. Tasks - Task hierarchy with dependencies
+ * 2. Agents - Agent communication and tool calls
+ * 3. Events - System events and state changes
  *
  * Each view displays data from the persistent WorkflowHistoryStore.
- * Tab switching preserves scroll positions in other tabs.
  */
 
 import blessed from 'blessed';
@@ -17,8 +14,6 @@ import { getHistoryStore, HistoryEntryTypes } from './workflow-history-store.js'
 
 // View identifiers
 export const ViewTypes = {
-  TIMELINE: 'timeline',
-  PROMPTS: 'prompts',
   TASKS: 'tasks',
   COMMUNICATION: 'communication',
   EVENTS: 'events'
@@ -26,37 +21,22 @@ export const ViewTypes = {
 
 // View configurations
 const VIEW_CONFIG = {
-  [ViewTypes.TIMELINE]: {
-    label: 'Timeline',
-    shortcut: 'F1',
-    key: 'f1',
-    description: 'Execution Timeline'
-  },
-  [ViewTypes.PROMPTS]: {
-    label: 'Prompts',
-    shortcut: 'F2',
-    key: 'f2',
-    description: 'Prompt History'
-  },
   [ViewTypes.TASKS]: {
     label: 'Tasks',
-    shortcut: 'F3',
-    key: 'f3',
-    description: 'Task Graph'
+    description: 'Tasks'
   },
   [ViewTypes.COMMUNICATION]: {
     label: 'Agents',
-    shortcut: 'F4',
-    key: 'f4',
-    description: 'Agent Communication'
+    description: 'Agents'
   },
   [ViewTypes.EVENTS]: {
     label: 'Events',
-    shortcut: 'F5',
-    key: 'f5',
-    description: 'Event Log'
+    description: 'Events'
   }
 };
+
+// View order for tab navigation
+const VIEW_ORDER = [ViewTypes.TASKS, ViewTypes.COMMUNICATION, ViewTypes.EVENTS];
 
 // Status icons and colors (ASCII only for terminal compatibility)
 const STATUS_STYLES = {
@@ -68,14 +48,6 @@ const STATUS_STYLES = {
   next: { icon: '>', fg: 'cyan' }
 };
 
-// Tree drawing characters (ASCII only)
-const TREE_CHARS = {
-  vertical: '|',
-  branch: '|',
-  corner: "'",
-  horizontal: '-'
-};
-
 // Phase display names
 const PHASE_NAMES = {
   planning: 'Planning',
@@ -85,7 +57,7 @@ const PHASE_NAMES = {
 };
 
 // Spinner frames for busy animation
-const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPINNER_FRAMES = ['|', '/', '-', '\\', '|', '/', '-', '\\', '|', '/'];
 
 /**
  * Multi-View Terminal UI with tabbed navigation
@@ -97,7 +69,7 @@ export class TerminalUIMultiView {
     this.widgets = {};
 
     // View state
-    this.currentView = ViewTypes.TIMELINE;
+    this.currentView = ViewTypes.TASKS;
     this.viewPanels = {};
     this.viewScrollPositions = {};
     this.viewContent = {};
@@ -144,20 +116,18 @@ export class TerminalUIMultiView {
     this.taskGraphFlatList = []; // Flattened list of tasks for navigation
 
     // Agent Communication view state
-    this.commFilterAgent = null; // Filter by specific agent (null = all)
-    this.commFilterType = null; // Filter by interaction type (null = all)
-    this.commSelectedIndex = 0; // Currently selected interaction index
-    this.commExpandedItems = new Set(); // Set of sequence numbers that are expanded
-    this.commInteractionList = []; // Cached list of interactions for navigation
+    this.commFilterAgent = null;
+    this.commFilterType = null;
+    this.commSelectedIndex = 0;
+    this.commInteractionList = [];
 
     // Event Log view state
-    this.eventSearchQuery = ''; // Search filter for events
-    this.eventSearchActive = false; // Whether search is active
-    this.eventCategoryFilters = new Set(); // Set of hidden categories (categories to exclude)
-    this.eventSelectedIndex = 0; // Currently selected event index
-    this.eventExpandedItems = new Set(); // Set of sequence numbers that are expanded
-    this.eventList = []; // Cached list of events for navigation
-    this.eventCategories = ['agent', 'task', 'goal', 'workflow', 'tool', 'error', 'system']; // Available categories
+    this.eventSearchQuery = '';
+    this.eventSearchActive = false;
+    this.eventCategoryFilters = new Set();
+    this.eventSelectedIndex = 0;
+    this.eventList = [];
+    this.eventCategories = ['agent', 'task', 'goal', 'workflow', 'tool', 'error', 'system'];
   }
 
   /**
@@ -170,11 +140,16 @@ export class TerminalUIMultiView {
     await this.historyStore.init();
 
     // Create blessed screen
+    // Note: smartCSR causes rendering artifacts with non-full-width elements
+    // Using fastCSR is less aggressive and causes fewer issues
     this.screen = blessed.screen({
-      smartCSR: true,
+      smartCSR: false,
+      fastCSR: false,
+      useBCE: true,
       title: 'Claude Looper - Multi-View',
       fullUnicode: true,
-      autoPadding: false
+      autoPadding: false,
+      warnings: false
     });
 
     this._createLayout();
@@ -191,9 +166,17 @@ export class TerminalUIMultiView {
 
     // Start auto-refresh if enabled
     if (this.autoRefresh) {
+      this.refreshCount = 0;
       this.refreshInterval = setInterval(() => {
         this._refreshCurrentView();
-      }, 1000);
+        // Periodically force full screen redraw to clear accumulated artifacts
+        this.refreshCount++;
+        if (this.refreshCount >= 5) {
+          this.refreshCount = 0;
+          this.screen.realloc();
+        }
+        this.screen.render();
+      }, 200);
     }
   }
 
@@ -201,68 +184,28 @@ export class TerminalUIMultiView {
    * Create the UI layout
    */
   _createLayout() {
-    // Header with tabs (top, full width)
+    // Header with tabs (top, full width, no border)
     this.widgets.header = blessed.box({
       parent: this.screen,
       top: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 1,
       tags: true,
-      border: { type: 'line' },
       style: {
         fg: 'white',
-        border: { fg: 'cyan' }
+        bg: 'black'
       }
     });
 
-    // Tab bar (inside header)
-    this.widgets.tabBar = blessed.box({
-      parent: this.widgets.header,
-      top: 0,
-      left: 0,
-      width: '100%',
-      height: 1,
-      tags: true,
-      style: { fg: 'white' }
-    });
-
-    // Left panel - Task list (always visible)
-    this.widgets.taskPanel = blessed.box({
-      parent: this.screen,
-      top: 3,
-      left: 0,
-      width: '25%',
-      height: '100%-6',
-      label: ' Tasks ',
-      tags: true,
-      keys: true,
-      vi: true,
-      mouse: true,
-      scrollable: true,
-      alwaysScroll: true,
-      scrollbar: {
-        ch: '|',
-        track: { bg: 'black' },
-        style: { bg: 'cyan' }
-      },
-      style: {
-        fg: 'white',
-        border: { fg: 'cyan' },
-        label: { fg: 'cyan', bold: true }
-      },
-      border: { type: 'line' },
-      content: ''
-    });
-
-    // Main view panel (right side, changes based on active view)
+    // Main view panel (full width, changes based on active view)
     this.widgets.mainPanel = blessed.box({
       parent: this.screen,
-      top: 3,
-      left: '25%',
+      top: 1,
+      left: 0,
       right: 0,
-      height: '100%-6',
-      label: ' Timeline ',
+      bottom: 1,
+      label: ' Tasks ',
       tags: true,
       keys: true,
       vi: true,
@@ -283,18 +226,17 @@ export class TerminalUIMultiView {
       content: '{gray-fg}Loading...{/gray-fg}'
     });
 
-    // Status bar (bottom)
+    // Status bar (bottom, no border)
     this.widgets.statusBar = blessed.box({
       parent: this.screen,
       bottom: 0,
       left: 0,
       width: '100%',
-      height: 3,
+      height: 1,
       tags: true,
-      border: { type: 'line' },
       style: {
         fg: 'white',
-        border: { fg: 'gray' }
+        bg: 'black'
       }
     });
 
@@ -307,12 +249,13 @@ export class TerminalUIMultiView {
    */
   _renderTabBar() {
     const tabs = [];
-    for (const [viewType, config] of Object.entries(VIEW_CONFIG)) {
+    for (const viewType of VIEW_ORDER) {
+      const config = VIEW_CONFIG[viewType];
       const isActive = viewType === this.currentView;
       const style = isActive ? '{cyan-fg}{bold}' : '{gray-fg}';
       const endStyle = isActive ? '{/bold}{/cyan-fg}' : '{/gray-fg}';
-      const indicator = isActive ? '●' : '○';
-      tabs.push(`${style}${indicator} ${config.shortcut}:${config.label}${endStyle}`);
+      const indicator = isActive ? '*' : 'o';
+      tabs.push(`${style}${indicator} ${config.label}${endStyle}`);
     }
 
     const spinner = this.busy
@@ -320,9 +263,8 @@ export class TerminalUIMultiView {
       : '';
     const phaseName = PHASE_NAMES[this.phase] || this.phase || '';
     const phaseText = phaseName ? ` {yellow-fg}[${phaseName}]{/yellow-fg}` : '';
-
     this.widgets.header.setContent(
-      ` ${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}${phaseText}  │  ${tabs.join('  ')}`
+      `${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}${phaseText}  ${tabs.join('  ')}`
     );
   }
 
@@ -331,13 +273,11 @@ export class TerminalUIMultiView {
    */
   _renderStatusBar() {
     const viewConfig = VIEW_CONFIG[this.currentView];
-    const stats = this.historyStore.getStats();
 
-    const helpText = '{gray-fg}F1-F5: Switch Views | Tab: Focus | ↑↓/j/k: Scroll | q: Quit{/gray-fg}';
-    const statsText = `{cyan-fg}Entries: ${stats.totalEntries}{/cyan-fg}`;
+    const helpText = '{gray-fg}Tab: Views | jk: Scroll | r: Refresh | q: Quit{/gray-fg}';
 
     this.widgets.statusBar.setContent(
-      ` {bold}${viewConfig.description}{/bold}  │  ${statsText}  │  ${helpText}`
+      ` {bold}${viewConfig.description}{/bold}  │  ${helpText}`
     );
   }
 
@@ -350,86 +290,25 @@ export class TerminalUIMultiView {
       this.destroy();
     });
 
-    // View switching with F1-F5
-    this.screen.key(['f1'], () => this._switchToView(ViewTypes.TIMELINE));
-    this.screen.key(['f2'], () => this._switchToView(ViewTypes.PROMPTS));
-    this.screen.key(['f3'], () => this._switchToView(ViewTypes.TASKS));
-    this.screen.key(['f4'], () => this._switchToView(ViewTypes.COMMUNICATION));
-    this.screen.key(['f5'], () => this._switchToView(ViewTypes.EVENTS));
-
-    // Number keys as alternative
-    this.screen.key(['1'], () => this._switchToView(ViewTypes.TIMELINE));
-    this.screen.key(['2'], () => this._switchToView(ViewTypes.PROMPTS));
-    this.screen.key(['3'], () => this._switchToView(ViewTypes.TASKS));
-    this.screen.key(['4'], () => this._switchToView(ViewTypes.COMMUNICATION));
-    this.screen.key(['5'], () => this._switchToView(ViewTypes.EVENTS));
-
-    // Tab to cycle focus
+    // Tab to cycle views forward
     this.screen.key(['tab'], () => {
-      this.screen.focusNext();
-      this.screen.render();
+      const currentIndex = VIEW_ORDER.indexOf(this.currentView);
+      const nextIndex = (currentIndex + 1) % VIEW_ORDER.length;
+      this._switchToView(VIEW_ORDER[nextIndex]);
     });
 
-    // Shift+Tab to cycle focus backwards
+    // Shift+Tab to cycle views backward
     this.screen.key(['S-tab'], () => {
-      this.screen.focusPrevious();
-      this.screen.render();
+      const currentIndex = VIEW_ORDER.indexOf(this.currentView);
+      const prevIndex = (currentIndex - 1 + VIEW_ORDER.length) % VIEW_ORDER.length;
+      this._switchToView(VIEW_ORDER[prevIndex]);
     });
 
-    // Refresh current view
+    // Refresh current view with full screen redraw
     this.screen.key(['r'], () => {
       this._refreshCurrentView();
+      this.screen.realloc();
       this.screen.render();
-    });
-
-    // Prompt History view specific shortcuts
-    // '/' to start search
-    this.screen.key(['/'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._startPromptSearch();
-      }
-    });
-
-    // 'n' and 'N' to navigate between prompts
-    this.screen.key(['n'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._navigatePrompt(1); // Next
-      }
-    });
-
-    this.screen.key(['S-n'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._navigatePrompt(-1); // Previous
-      }
-    });
-
-    // Enter to toggle expand/collapse
-    this.screen.key(['enter'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._togglePromptExpand();
-      }
-    });
-
-    // 'e' to expand all, 'c' to collapse all
-    this.screen.key(['e'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._expandAllPrompts();
-      }
-    });
-
-    this.screen.key(['c'], () => {
-      if (this.currentView === ViewTypes.PROMPTS) {
-        this._collapseAllPrompts();
-      }
-    });
-
-    // Escape to clear search or exit
-    this.screen.key(['escape'], () => {
-      if (this.currentView === ViewTypes.PROMPTS && this.promptSearchActive) {
-        this._clearPromptSearch();
-        return;
-      }
-      this.destroy();
     });
 
     // Task Graph view specific shortcuts
@@ -465,13 +344,6 @@ export class TerminalUIMultiView {
     this.screen.key(['k', 'up'], () => {
       if (this.currentView === ViewTypes.COMMUNICATION) {
         this._navigateCommUp();
-      }
-    });
-
-    // Enter to expand/collapse item
-    this.screen.key(['enter'], () => {
-      if (this.currentView === ViewTypes.COMMUNICATION) {
-        this._toggleCommExpand();
       }
     });
 
@@ -513,13 +385,6 @@ export class TerminalUIMultiView {
       }
     });
 
-    // Enter to expand/collapse event details
-    this.screen.key(['enter'], () => {
-      if (this.currentView === ViewTypes.EVENTS) {
-        this._toggleEventExpand();
-      }
-    });
-
     // '/' to start search in Events view
     this.screen.key(['/'], () => {
       if (this.currentView === ViewTypes.EVENTS) {
@@ -558,7 +423,7 @@ export class TerminalUIMultiView {
    */
   _navigateCommDown() {
     if (this.commInteractionList.length === 0) return;
-    this.commSelectedIndex = Math.min(this.commInteractionList.length - 1, this.commSelectedIndex + 1);
+    this.commSelectedIndex = Math.max(0, this.commSelectedIndex - 1);
     this._refreshCommunicationView();
     this._renderCurrentView();
     this.screen.render();
@@ -569,26 +434,7 @@ export class TerminalUIMultiView {
    */
   _navigateCommUp() {
     if (this.commInteractionList.length === 0) return;
-    this.commSelectedIndex = Math.max(0, this.commSelectedIndex - 1);
-    this._refreshCommunicationView();
-    this._renderCurrentView();
-    this.screen.render();
-  }
-
-  /**
-   * Toggle expand/collapse for selected communication item
-   */
-  _toggleCommExpand() {
-    if (this.commInteractionList.length === 0) return;
-    const selected = this.commInteractionList[this.commSelectedIndex];
-    if (!selected) return;
-
-    if (this.commExpandedItems.has(selected.sequence)) {
-      this.commExpandedItems.delete(selected.sequence);
-    } else {
-      this.commExpandedItems.add(selected.sequence);
-    }
-
+    this.commSelectedIndex = Math.min(this.commInteractionList.length - 1, this.commSelectedIndex + 1);
     this._refreshCommunicationView();
     this._renderCurrentView();
     this.screen.render();
@@ -664,25 +510,6 @@ export class TerminalUIMultiView {
   _navigateEventUp() {
     if (this.eventList.length === 0) return;
     this.eventSelectedIndex = Math.max(0, this.eventSelectedIndex - 1);
-    this._refreshEventsView();
-    this._renderCurrentView();
-    this.screen.render();
-  }
-
-  /**
-   * Toggle expand/collapse for selected event
-   */
-  _toggleEventExpand() {
-    if (this.eventList.length === 0) return;
-    const selected = this.eventList[this.eventSelectedIndex];
-    if (!selected) return;
-
-    if (this.eventExpandedItems.has(selected.sequence)) {
-      this.eventExpandedItems.delete(selected.sequence);
-    } else {
-      this.eventExpandedItems.add(selected.sequence);
-    }
-
     this._refreshEventsView();
     this._renderCurrentView();
     this.screen.render();
@@ -877,14 +704,14 @@ export class TerminalUIMultiView {
    */
   _getEventCategoryIcon(category) {
     switch (category) {
-      case 'agent': return '🤖';
-      case 'task': return '📋';
-      case 'goal': return '🎯';
-      case 'workflow': return '⚙️';
-      case 'tool': return '🔧';
-      case 'error': return '❌';
-      case 'system': return '💻';
-      default: return '•';
+      case 'agent': return '@';
+      case 'task': return '#';
+      case 'goal': return '*';
+      case 'workflow': return '~';
+      case 'tool': return '$';
+      case 'error': return 'x';
+      case 'system': return '>';
+      default: return '-';
     }
   }
 
@@ -980,12 +807,6 @@ export class TerminalUIMultiView {
       this.promptSelectedIndex = this.promptConversations.length - 1;
     } else if (this.promptSelectedIndex >= this.promptConversations.length) {
       this.promptSelectedIndex = 0;
-    }
-
-    // Auto-expand the selected prompt
-    const selected = this.promptConversations[this.promptSelectedIndex];
-    if (selected) {
-      this.promptExpandedSections.add(selected.sequence);
     }
 
     this._refreshPromptsView();
@@ -1105,6 +926,9 @@ export class TerminalUIMultiView {
     this.currentView = viewType;
     const config = VIEW_CONFIG[viewType];
 
+    // Clear the main panel content first to avoid artifacts
+    this.widgets.mainPanel.setContent('');
+
     // Update panel label
     this.widgets.mainPanel.setLabel(` ${config.description} `);
 
@@ -1120,6 +944,9 @@ export class TerminalUIMultiView {
     // Update tab bar and status
     this._renderTabBar();
     this._renderStatusBar();
+
+    // Force full screen redraw to clear any artifacts
+    this.screen.realloc();
     this.screen.render();
   }
 
@@ -1127,8 +954,6 @@ export class TerminalUIMultiView {
    * Refresh all view content from history store
    */
   _refreshAllViews() {
-    this._refreshTimelineView();
-    this._refreshPromptsView();
     this._refreshTasksView();
     this._refreshCommunicationView();
     this._refreshEventsView();
@@ -1139,12 +964,6 @@ export class TerminalUIMultiView {
    */
   _refreshCurrentView() {
     switch (this.currentView) {
-      case ViewTypes.TIMELINE:
-        this._refreshTimelineView();
-        break;
-      case ViewTypes.PROMPTS:
-        this._refreshPromptsView();
-        break;
       case ViewTypes.TASKS:
         this._refreshTasksView();
         break;
@@ -1172,9 +991,9 @@ export class TerminalUIMultiView {
       lines.push('{gray-fg}No activity recorded yet...{/gray-fg}');
       lines.push('');
       lines.push('{gray-fg}The timeline will show:{/gray-fg}');
-      lines.push('{gray-fg}  • Workflow phases (Planning → Review → Execution → Verification){/gray-fg}');
-      lines.push('{gray-fg}  • Task execution periods with duration{/gray-fg}');
-      lines.push('{gray-fg}  • Retry attempts and fix cycles{/gray-fg}');
+      lines.push('{gray-fg}  - Workflow phases (Planning -> Review -> Execution -> Verification){/gray-fg}');
+      lines.push('{gray-fg}  - Task execution periods with duration{/gray-fg}');
+      lines.push('{gray-fg}  - Retry attempts and fix cycles{/gray-fg}');
       this.viewContent[ViewTypes.TIMELINE] = lines;
       return;
     }
@@ -1182,11 +1001,6 @@ export class TerminalUIMultiView {
     // Build timeline structure from entries
     const timeline = this._buildTimelineStructure(entries);
 
-    // Render workflow header
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}                    EXECUTION TIMELINE                       {/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('');
 
     // Render phase flow visualization
     this._renderPhaseFlow(lines, timeline, contentWidth);
@@ -1292,10 +1106,10 @@ export class TerminalUIMultiView {
   _renderPhaseFlow(lines, timeline, contentWidth) {
     const phaseOrder = ['planning', 'plan_review', 'execution', 'verification'];
     const phaseIcons = {
-      planning: '📋',
-      plan_review: '🔍',
-      execution: '⚙️',
-      verification: '✓'
+      planning: 'P',
+      plan_review: 'R',
+      execution: 'E',
+      verification: 'V'
     };
 
     // Determine which phases have been visited
@@ -1319,13 +1133,13 @@ export class TerminalUIMultiView {
       // Phase box
       if (isCurrent) {
         flowLine += `{yellow-fg}{bold}[ ${phaseName} ]{/bold}{/yellow-fg}`;
-        statusLine += '{yellow-fg}   ▲ NOW   {/yellow-fg}';
+        statusLine += '{yellow-fg}   ^ NOW   {/yellow-fg}';
       } else if (isCompleted) {
         flowLine += `{green-fg}[ ${phaseName} ]{/green-fg}`;
-        statusLine += '{green-fg}    ✓     {/green-fg}';
+        statusLine += '{green-fg}    +     {/green-fg}';
       } else {
         flowLine += `{gray-fg}[ ${phaseName} ]{/gray-fg}`;
-        statusLine += '{gray-fg}    ○     {/gray-fg}';
+        statusLine += '{gray-fg}    o     {/gray-fg}';
       }
 
       // Arrow between phases
@@ -1333,10 +1147,10 @@ export class TerminalUIMultiView {
         const nextPhase = phaseOrder[i + 1];
         const nextVisited = visitedPhases.has(nextPhase);
         if (isCompleted || (isCurrent && nextVisited)) {
-          flowLine += ' {green-fg}───▶{/green-fg} ';
+          flowLine += ' {green-fg}───>{/green-fg} ';
           statusLine += '       ';
         } else {
-          flowLine += ' {gray-fg}───▷{/gray-fg} ';
+          flowLine += ' {gray-fg}───>{/gray-fg} ';
           statusLine += '       ';
         }
       }
@@ -1356,9 +1170,9 @@ export class TerminalUIMultiView {
         const phaseName = PHASE_NAMES[phase.name] || phase.name;
 
         if (phase.isCurrent) {
-          lines.push(`  {yellow-fg}● ${phaseName}{/yellow-fg}: ${startTime} → {italic}ongoing{/italic} ({duration}+)`);
+          lines.push(`  {yellow-fg}* ${phaseName}{/yellow-fg}: ${startTime} -> {italic}ongoing{/italic} ({duration}+)`);
         } else {
-          lines.push(`  {green-fg}✓ ${phaseName}{/green-fg}: ${startTime} → ${endTime} ({duration})`);
+          lines.push(`  {green-fg}+ ${phaseName}{/green-fg}: ${startTime} -> ${endTime} ({duration})`);
         }
       }
       lines.push('');
@@ -1366,122 +1180,119 @@ export class TerminalUIMultiView {
   }
 
   /**
-   * Render detailed timeline with task executions
+   * Render detailed timeline with task executions (focused dashboard view)
    */
   _renderDetailedTimeline(lines, timeline, entries, contentWidth) {
-    lines.push('{bold}{cyan-fg}───────────────────────────────────────────────────────────{/cyan-fg}{/bold}');
-    lines.push('{bold}                     DETAILED TIMELINE                      {/bold}');
-    lines.push('{bold}{cyan-fg}───────────────────────────────────────────────────────────{/cyan-fg}{/bold}');
-    lines.push('');
+    // Calculate overall stats
+    const totalTasks = timeline.taskExecutions.size;
+    const completedTasks = Array.from(timeline.taskExecutions.values()).filter(e => e.status === 'completed').length;
+    const failedTasks = Array.from(timeline.taskExecutions.values()).filter(e => e.status === 'failed').length;
+    const inProgressTasks = Array.from(timeline.taskExecutions.values()).filter(e => e.status === 'in_progress').length;
+
+    // Overall stats summary
+    if (totalTasks > 0) {
+      lines.push('{bold}Task Progress:{/bold}');
+
+      // Progress bar
+      const barWidth = Math.min(40, contentWidth - 20);
+      const completedWidth = Math.round((completedTasks / totalTasks) * barWidth);
+      const failedWidth = Math.round((failedTasks / totalTasks) * barWidth);
+      const inProgressWidth = Math.round((inProgressTasks / totalTasks) * barWidth);
+      const pendingWidth = barWidth - completedWidth - failedWidth - inProgressWidth;
+
+      const progressBar =
+        '{green-fg}' + '#'.repeat(completedWidth) + '{/green-fg}' +
+        '{yellow-fg}' + '#'.repeat(inProgressWidth) + '{/yellow-fg}' +
+        '{red-fg}' + '#'.repeat(failedWidth) + '{/red-fg}' +
+        '{gray-fg}' + '.'.repeat(Math.max(0, pendingWidth)) + '{/gray-fg}';
+
+      const percentage = Math.round((completedTasks / totalTasks) * 100);
+      lines.push(`  [${progressBar}] ${percentage}%`);
+      lines.push(`  {green-fg}${completedTasks} completed{/green-fg}  {yellow-fg}${inProgressTasks} in progress{/yellow-fg}  {red-fg}${failedTasks} failed{/red-fg}`);
+      lines.push('');
+    }
 
     // Show retry and fix cycle summary if any
     if (timeline.retryAttempts.length > 0 || timeline.fixCycles.length > 0) {
       lines.push('{bold}Retries & Fix Cycles:{/bold}');
       if (timeline.retryAttempts.length > 0) {
-        lines.push(`  {yellow-fg}⟳ Retry Attempts: ${timeline.retryAttempts.length}{/yellow-fg}`);
+        lines.push(`  {yellow-fg}@ Retry Attempts: ${timeline.retryAttempts.length}{/yellow-fg}`);
       }
       if (timeline.fixCycles.length > 0) {
-        lines.push(`  {magenta-fg}🔧 Fix Cycles: ${timeline.fixCycles.length}{/magenta-fg}`);
+        lines.push(`  {magenta-fg}! Fix Cycles: ${timeline.fixCycles.length}{/magenta-fg}`);
       }
       lines.push('');
     }
 
-    // Task execution summary
+    // Task execution Gantt-style view
     if (timeline.taskExecutions.size > 0) {
-      lines.push('{bold}Task Executions:{/bold}');
+      lines.push('{bold}Task Execution Timeline:{/bold}');
+      lines.push(`{cyan-fg}${'─'.repeat(Math.min(60, contentWidth - 2))}{/cyan-fg}`);
+
+      // Find time range for scaling
+      let minTime = Infinity, maxTime = 0;
+      for (const exec of timeline.taskExecutions.values()) {
+        minTime = Math.min(minTime, exec.startTime);
+        maxTime = Math.max(maxTime, exec.endTime);
+      }
+      const timeRange = maxTime - minTime || 1;
+      const barMaxWidth = Math.min(30, contentWidth - 40);
 
       for (const [taskId, exec] of timeline.taskExecutions) {
         const duration = this._formatDuration(exec.endTime - exec.startTime);
-        const startTime = this._formatTimestamp(exec.startTime);
-        const endTime = this._formatTimestamp(exec.endTime);
-        const taskIdShort = taskId.substring(0, 25);
+
+        // Get task description if available
+        const task = this.tasks.find(t => t.id === taskId);
+        const labelWidth = Math.max(20, contentWidth - 30);
+        const taskLabel = task ? this._truncate(task.description || taskId, labelWidth) : taskId.substring(0, labelWidth);
 
         // Status styling
-        let statusIcon, statusColor;
+        let statusIcon, statusColor, barChar;
         switch (exec.status) {
           case 'completed':
-            statusIcon = '✓';
+            statusIcon = '+';
             statusColor = 'green';
+            barChar = '#';
             break;
           case 'failed':
-            statusIcon = '✗';
+            statusIcon = 'x';
             statusColor = 'red';
+            barChar = '#';
             break;
           case 'in_progress':
-            statusIcon = '●';
+            statusIcon = '*';
             statusColor = 'yellow';
+            barChar = '=';
             break;
           default:
-            statusIcon = '○';
+            statusIcon = 'o';
             statusColor = 'gray';
+            barChar = '.';
         }
 
-        // Build task line
-        let taskLine = `  {${statusColor}-fg}${statusIcon}{/${statusColor}-fg} `;
-        taskLine += `{white-fg}${taskIdShort}{/white-fg}`;
+        // Calculate bar position and width
+        const startOffset = Math.round(((exec.startTime - minTime) / timeRange) * barMaxWidth);
+        const barWidth = Math.max(1, Math.round(((exec.endTime - exec.startTime) / timeRange) * barMaxWidth));
 
-        // Add attempt indicator for retries
+        // Build Gantt bar
+        const ganttBar = ' '.repeat(startOffset) + barChar.repeat(barWidth);
+
+        // Build task line with attempt indicator
+        let attemptSuffix = '';
         if (exec.attempts > 1) {
-          taskLine += ` {yellow-fg}(attempt ${exec.attempts}){/yellow-fg}`;
+          attemptSuffix = ` {yellow-fg}(x${exec.attempts}){/yellow-fg}`;
         }
 
-        lines.push(taskLine);
-
-        // Duration and timing on separate line
-        let timingLine = `    {gray-fg}${startTime} → ${endTime} (${duration}){/gray-fg}`;
-        lines.push(timingLine);
+        lines.push(`  {${statusColor}-fg}${statusIcon}{/${statusColor}-fg} {white-fg}${taskLabel}{/white-fg}${attemptSuffix}`);
+        lines.push(`    {${statusColor}-fg}${ganttBar}{/${statusColor}-fg} {gray-fg}${duration}{/gray-fg}`);
       }
       lines.push('');
     }
 
-    // Chronological event log
-    lines.push('{bold}Event Log:{/bold}');
-    lines.push('{gray-fg}(Chronological order, oldest first){/gray-fg}');
-    lines.push('');
-
-    let lastPhase = null;
-    let lastTimestamp = null;
-    const now = Date.now();
-
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      const isLatest = i === entries.length - 1;
-      const time = this._formatTimestamp(entry.timestamp);
-
-      // Phase separator with transition marker
-      if (entry.phase && entry.phase !== lastPhase) {
-        if (lastPhase !== null) {
-          // Phase transition marker
-          lines.push('');
-          lines.push('{cyan-fg}  │{/cyan-fg}');
-          lines.push('{cyan-fg}  ▼ Phase Transition{/cyan-fg}');
-        }
-        const phaseName = PHASE_NAMES[entry.phase] || entry.phase;
-        const phaseColor = entry.phase === this.phase ? 'yellow' : 'cyan';
-        lines.push('');
-        lines.push(`{${phaseColor}-fg}╔═══════════════════════════════════════════════════════{/${phaseColor}-fg}`);
-        lines.push(`{${phaseColor}-fg}║ {bold}${phaseName.toUpperCase()}{/bold}{/${phaseColor}-fg}`);
-        lines.push(`{${phaseColor}-fg}╚═══════════════════════════════════════════════════════{/${phaseColor}-fg}`);
-        lastPhase = entry.phase;
-      }
-
-      // Entry formatting with timeline indicator
-      const isCurrentPosition = isLatest && this.busy;
-      const timelineMarker = isCurrentPosition ? '{yellow-fg}▶{/yellow-fg}' : '{gray-fg}│{/gray-fg}';
-
-      // Format entry based on type
-      const formattedLines = this._formatEnhancedTimelineEntry(entry, time, contentWidth, isCurrentPosition);
-      for (const line of formattedLines) {
-        lines.push(`${timelineMarker} ${line}`);
-      }
-
-      lastTimestamp = entry.timestamp;
-    }
-
-    // Current position indicator
+    // Current activity indicator
     if (this.busy) {
-      lines.push('');
-      lines.push('{yellow-fg}▼ {bold}NOW{/bold} - Processing...{/yellow-fg}');
+      lines.push(`{cyan-fg}${'─'.repeat(Math.min(60, contentWidth - 2))}{/cyan-fg}`);
+      lines.push('{yellow-fg}* {bold}Processing...{/bold}{/yellow-fg}');
     }
   }
 
@@ -1497,7 +1308,7 @@ export class TerminalUIMultiView {
 
     switch (entry.type) {
       case HistoryEntryTypes.PROMPT:
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {yellow-fg}← PROMPT{/yellow-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {yellow-fg}<- PROMPT{/yellow-fg}${endHighlight}`);
         const promptPreview = this._truncate(entry.data.content || '', contentWidth - 25);
         if (promptPreview) {
           lines.push(`  {gray-fg}${promptPreview}{/gray-fg}`);
@@ -1505,22 +1316,22 @@ export class TerminalUIMultiView {
         break;
 
       case HistoryEntryTypes.RESPONSE:
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {green-fg}→ RESPONSE{/green-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {green-fg}-> RESPONSE{/green-fg}${endHighlight}`);
         const responsePreview = this._truncate(entry.data.content || '', contentWidth - 25);
         if (responsePreview) {
           lines.push(`  {white-fg}${responsePreview}{/white-fg}`);
         }
         if (entry.data.toolCalls && entry.data.toolCalls.length > 0) {
-          lines.push(`  {magenta-fg}⚡ Tools: ${entry.data.toolCalls.map(t => t.name).join(', ')}{/magenta-fg}`);
+          lines.push(`  {magenta-fg}! Tools: ${entry.data.toolCalls.map(t => t.name).join(', ')}{/magenta-fg}`);
         }
         break;
 
       case HistoryEntryTypes.TOOL_CALL:
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {magenta-fg}⚡ Tool: ${entry.data.toolName}{/magenta-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {magenta-fg}! Tool: ${entry.data.toolName}{/magenta-fg}${endHighlight}`);
         break;
 
       case HistoryEntryTypes.PHASE_CHANGE:
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} {cyan-fg}◆ PHASE TRANSITION: ${entry.data.previousPhase || 'start'} → ${entry.data.newPhase}{/cyan-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} {cyan-fg}# PHASE TRANSITION: ${entry.data.previousPhase || 'start'} -> ${entry.data.newPhase}{/cyan-fg}${endHighlight}`);
         break;
 
       case HistoryEntryTypes.TASK_UPDATE:
@@ -1530,7 +1341,7 @@ export class TerminalUIMultiView {
         // Determine if this is a retry or fix cycle
         let indicator = '';
         if (entry.data.attempts && entry.data.attempts > 1) {
-          indicator = ` {yellow-fg}⟳ RETRY #${entry.data.attempts}{/yellow-fg}`;
+          indicator = ` {yellow-fg}@ RETRY #${entry.data.attempts}{/yellow-fg}`;
         }
 
         // Check if coming from failed state (fix cycle)
@@ -1550,13 +1361,13 @@ export class TerminalUIMultiView {
         else if (eventType.includes('failed')) eventColor = 'red';
         else if (eventType.includes('retry') || eventType.includes('fix')) eventColor = 'yellow';
 
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {${eventColor}-fg}○ ${eventType}{/${eventColor}-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} ${agentTag} {${eventColor}-fg}o ${eventType}{/${eventColor}-fg}${endHighlight}`);
         break;
 
       case HistoryEntryTypes.INTERACTION:
         const fromColor = this._getAgentColor(entry.data.from);
         const toColor = this._getAgentColor(entry.data.to);
-        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} {${fromColor}-fg}${entry.data.from}{/${fromColor}-fg} → {${toColor}-fg}${entry.data.to}{/${toColor}-fg}${endHighlight}`);
+        lines.push(`${highlight}{gray-fg}${time}{/gray-fg} {${fromColor}-fg}${entry.data.from}{/${fromColor}-fg} -> {${toColor}-fg}${entry.data.to}{/${toColor}-fg}${endHighlight}`);
         break;
 
       default:
@@ -1730,24 +1541,14 @@ export class TerminalUIMultiView {
    * Render prompts view header with help info
    */
   _renderPromptsHeader(lines, filteredCount, totalCount, contentWidth) {
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}                     PROMPT HISTORY                         {/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('');
 
     // Show search status
     if (this.promptSearchQuery) {
-      lines.push(`{yellow-fg}🔍 Search: "${this.promptSearchQuery}" ({bold}${filteredCount}{/bold} of ${totalCount} matches){/yellow-fg}`);
+      lines.push(`{yellow-fg}? Search: "${this.promptSearchQuery}" ({bold}${filteredCount}{/bold} of ${totalCount} matches){/yellow-fg}`);
     } else {
       lines.push(`{gray-fg}Total conversations: {bold}${totalCount}{/bold}{/gray-fg}`);
     }
 
-    // Show keyboard shortcuts help
-    lines.push('');
-    lines.push('{gray-fg}╭─────────────────────────────────────────────────────────────╮{/gray-fg}');
-    lines.push('{gray-fg}│ {white-fg}Keyboard:{/white-fg}  {cyan-fg}/{/cyan-fg} Search   {cyan-fg}n/N{/cyan-fg} Next/Prev   {cyan-fg}Enter{/cyan-fg} Expand/Collapse │{/gray-fg}');
-    lines.push('{gray-fg}│            {cyan-fg}e{/cyan-fg} Expand All   {cyan-fg}c{/cyan-fg} Collapse All   {cyan-fg}Esc{/cyan-fg} Clear Search   │{/gray-fg}');
-    lines.push('{gray-fg}╰─────────────────────────────────────────────────────────────╯{/gray-fg}');
     lines.push('');
   }
 
@@ -1757,7 +1558,7 @@ export class TerminalUIMultiView {
   _renderConversation(lines, conv, isSelected, isExpanded, contentWidth) {
     const time = this._formatTimestamp(conv.timestamp);
     const agentColor = this._getAgentColor(conv.agentName);
-    const expandIcon = isExpanded ? '▼' : '▶';
+    const expandIcon = isExpanded ? 'v' : '>';
     const selectMarker = isSelected ? '{inverse}' : '';
     const selectEnd = isSelected ? '{/inverse}' : '';
 
@@ -1807,7 +1608,7 @@ export class TerminalUIMultiView {
           lines.push('{green-fg}│{/green-fg} {magenta-fg}{bold}Tool Calls ({/bold}' + toolCalls.length + '{bold}):{/bold}{/magenta-fg}');
           for (const tool of toolCalls) {
             const toolDisplay = this._highlightSearchTerms(tool.name || 'unknown');
-            lines.push(`{green-fg}│{/green-fg}   {magenta-fg}• ${toolDisplay}{/magenta-fg}`);
+            lines.push(`{green-fg}│{/green-fg}   {magenta-fg}- ${toolDisplay}{/magenta-fg}`);
           }
         }
 
@@ -1825,18 +1626,18 @@ export class TerminalUIMultiView {
       }
     } else {
       // Collapsed view - show preview
-      const promptPreview = this._truncate(conv.prompt?.data?.content || '', 60);
+      const promptPreview = this._truncate(conv.prompt?.data?.content || '', contentWidth - 6);
       const responsePreview = conv.response
-        ? this._truncate(conv.response.data?.content || '', 40)
+        ? this._truncate(conv.response.data?.content || '', contentWidth - 6)
         : '{gray-fg}(awaiting response){/gray-fg}';
 
-      lines.push(`  {yellow-fg}←{/yellow-fg} ${this._highlightSearchTerms(promptPreview)}`);
-      lines.push(`  {green-fg}→{/green-fg} ${this._highlightSearchTerms(responsePreview)}`);
+      lines.push(`  {yellow-fg}<-{/yellow-fg} ${this._highlightSearchTerms(promptPreview)}`);
+      lines.push(`  {green-fg}->{/green-fg} ${this._highlightSearchTerms(responsePreview)}`);
 
       // Show tool count if collapsed
       const toolCount = conv.response?.data?.toolCalls?.length || 0;
       if (toolCount > 0) {
-        lines.push(`  {magenta-fg}⚡ ${toolCount} tool call${toolCount > 1 ? 's' : ''}{/magenta-fg}`);
+        lines.push(`  {magenta-fg}! ${toolCount} tool call${toolCount > 1 ? 's' : ''}{/magenta-fg}`);
       }
     }
   }
@@ -1887,367 +1688,155 @@ export class TerminalUIMultiView {
       this.taskGraphSelectedIndex = Math.max(0, this.taskGraphFlatList.length - 1);
     }
 
-    // Render header with help
-    this._renderTaskGraphHeader(lines, contentWidth);
-
     if (this.tasks.length === 0) {
-      lines.push('');
       lines.push('{gray-fg}No tasks recorded yet...{/gray-fg}');
-      lines.push('');
       lines.push('{gray-fg}Tasks will appear here when the planner creates them.{/gray-fg}');
       this.viewContent[ViewTypes.TASKS] = lines;
       return;
     }
 
-    // Calculate graph layout dimensions
-    const graphWidth = this.taskGraphShowDetails ? Math.floor(contentWidth * 0.55) : contentWidth - 2;
+    // Calculate layout dimensions for side-by-side view
+    const graphWidth = Math.floor(contentWidth * 0.5);
     const detailWidth = contentWidth - graphWidth - 3;
 
-    // Render the task dependency graph
-    this._renderTaskDependencyGraph(lines, taskMap, graphWidth);
+    // Render task tree into left column
+    const leftLines = [];
+    this._renderTaskTreeView(leftLines, taskMap, graphWidth);
 
-    // If showing details, render selected task details
-    if (this.taskGraphShowDetails && this.taskGraphFlatList.length > 0) {
+    // Render details into right column
+    const rightLines = [];
+    if (this.taskGraphFlatList.length > 0) {
       const selectedTask = this.taskGraphFlatList[this.taskGraphSelectedIndex];
       if (selectedTask) {
-        this._renderTaskDetails(lines, selectedTask, taskMap, detailWidth, graphWidth);
+        this._renderTaskDetailsColumn(rightLines, selectedTask, taskMap, detailWidth);
       }
     }
 
-    // Render summary
-    this._renderTaskGraphSummary(lines, contentWidth);
+    // Merge columns side by side
+    const maxLines = Math.max(leftLines.length, rightLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      let leftLine = leftLines[i] || '';
+      const rightLine = rightLines[i] || '';
+
+      // Truncate left line if it exceeds graphWidth
+      const leftClean = this._stripTags(leftLine);
+      if (leftClean.length > graphWidth - 1) {
+        // Need to truncate - find a safe cut point
+        leftLine = this._truncateWithTags(leftLine, graphWidth - 4) + '...';
+      }
+
+      const leftLen = this._stripTags(leftLine).length;
+      const padding = Math.max(0, graphWidth - leftLen);
+      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
+    }
 
     this.viewContent[ViewTypes.TASKS] = lines;
   }
 
   /**
-   * Build flat list of tasks for navigation
+   * Build flat list of tasks for navigation with tree structure
+   * Uses ONLY subtasks arrays for hierarchy (from replanning)
+   * metadata.dependencies is execution order, NOT parent-child
    */
   _buildTaskFlatList(tasks, taskMap) {
     const flatList = [];
-    const rootTasks = tasks.filter(t => !t.parentTaskId || !taskMap.has(t.parentTaskId));
+    const added = new Set();
+    const childrenMap = new Map();
+    const hasParent = new Set();
 
-    const addTaskAndChildren = (task, depth = 0) => {
-      flatList.push({ ...task, depth });
-      const subtaskIds = task.subtasks || [];
-      for (const subtaskId of subtaskIds) {
-        const subtask = taskMap.get(subtaskId);
-        if (subtask) {
-          addTaskAndChildren(subtask, depth + 1);
+    // Build tree ONLY from subtasks arrays
+    for (const task of tasks) {
+      for (const kidId of (task.subtasks || [])) {
+        const kid = taskMap.get(kidId);
+        if (kid) {
+          if (!childrenMap.has(task.id)) childrenMap.set(task.id, []);
+          childrenMap.get(task.id).push(kid);
+          hasParent.add(kidId);
         }
+      }
+    }
+
+    // Roots = tasks not in any subtasks array
+    const roots = tasks.filter(t => !hasParent.has(t.id));
+
+    const addTask = (task, depth) => {
+      if (added.has(task.id)) return;
+      added.add(task.id);
+      flatList.push({ ...task, depth });
+      for (const child of (childrenMap.get(task.id) || [])) {
+        addTask(child, depth + 1);
       }
     };
 
-    for (const task of rootTasks) {
-      addTaskAndChildren(task);
+    for (const root of roots) {
+      addTask(root, 0);
     }
 
     return flatList;
   }
 
   /**
-   * Render task graph header with help
+   * Render the task tree view
    */
-  _renderTaskGraphHeader(lines, contentWidth) {
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}                   TASK DEPENDENCY GRAPH                     {/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('');
-
-    // Show keyboard shortcuts help
-    lines.push('{gray-fg}╭─────────────────────────────────────────────────────────────╮{/gray-fg}');
-    lines.push('{gray-fg}│ {white-fg}Keyboard:{/white-fg}  {cyan-fg}j/↓{/cyan-fg} Next   {cyan-fg}k/↑{/cyan-fg} Prev   {cyan-fg}d{/cyan-fg} Toggle Details        │{/gray-fg}');
-    lines.push('{gray-fg}╰─────────────────────────────────────────────────────────────╯{/gray-fg}');
-    lines.push('');
-
-    // Legend
-    lines.push('{bold}Legend:{/bold}');
-    lines.push('  {green-fg}+ Completed{/green-fg}  {yellow-fg}* In Progress{/yellow-fg}  {gray-fg}o Pending{/gray-fg}  {red-fg}x Failed{/red-fg}  {magenta-fg}- Blocked{/magenta-fg}');
-    lines.push('  {white-fg}Complexity:{/white-fg} {green-fg}[S]{/green-fg} Simple  {yellow-fg}[M]{/yellow-fg} Medium  {red-fg}[C]{/red-fg} Complex');
-    lines.push('  {white-fg}Connectors:{/white-fg} {cyan-fg}├──{/cyan-fg} Parent-Child  {magenta-fg}-->{/magenta-fg} Dependency');
-    lines.push('');
-  }
-
-  /**
-   * Render the task dependency graph
-   */
-  _renderTaskDependencyGraph(lines, taskMap, graphWidth) {
-    lines.push('{bold}Task Graph:{/bold}');
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(60, graphWidth))}{/cyan-fg}`);
-
-    // Build index map for dependency resolution
-    const taskIndexMap = new Map();
-    this.tasks.forEach((task, index) => {
-      taskIndexMap.set(task.id, index);
-    });
-
-    // Render each task with visual connectors
+  _renderTaskTreeView(lines, taskMap, graphWidth) {
     for (let i = 0; i < this.taskGraphFlatList.length; i++) {
       const task = this.taskGraphFlatList[i];
       const isSelected = i === this.taskGraphSelectedIndex;
       const depth = task.depth || 0;
 
-      this._renderTaskNode(lines, task, isSelected, depth, graphWidth, taskMap, taskIndexMap, i);
-    }
+      // Find if last sibling at this depth
+      let isLast = true;
+      for (let j = i + 1; j < this.taskGraphFlatList.length; j++) {
+        const nd = this.taskGraphFlatList[j].depth || 0;
+        if (nd < depth) break;
+        if (nd === depth) { isLast = false; break; }
+      }
 
-    lines.push('');
+      // Track continuing lines
+      const continuing = [];
+      for (let d = 0; d < depth; d++) {
+        let hasSibling = false;
+        for (let j = i + 1; j < this.taskGraphFlatList.length; j++) {
+          const nd = this.taskGraphFlatList[j].depth || 0;
+          if (nd < d) break;
+          if (nd === d) { hasSibling = true; break; }
+        }
+        continuing[d] = hasSibling;
+      }
+
+      this._renderTreeNode(lines, task, isSelected, depth, graphWidth, isLast, continuing);
+    }
   }
 
   /**
-   * Render a single task node in the graph
+   * Render a single task as a tree node
    */
-  _renderTaskNode(lines, task, isSelected, depth, graphWidth, taskMap, taskIndexMap, flatIndex) {
+  _renderTreeNode(lines, task, isSelected, depth, graphWidth, isLast, continuing) {
     const isCurrent = task.id === this.currentTaskId;
     const isNext = task.id === this.nextTaskId;
 
-    // Get status style
     let style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
     if (isCurrent) style = STATUS_STYLES.in_progress;
     if (isNext && !isCurrent) style = STATUS_STYLES.next;
 
-    // Build tree connector prefix for parent-child relationships
+    // Build tree prefix
     let prefix = '';
-    if (depth > 0) {
-      prefix = '  '.repeat(depth - 1);
-      // Check if this is the last sibling at this depth
-      const siblings = this._getSiblings(task, taskMap);
-      const siblingIndex = siblings.findIndex(s => s.id === task.id);
-      const isLastSibling = siblingIndex === siblings.length - 1;
-      prefix += isLastSibling ? '{cyan-fg}└──{/cyan-fg}' : '{cyan-fg}├──{/cyan-fg}';
-    }
-
-    // Status icon
-    const icon = isCurrent ? '●' : (isNext ? '▶' : style.icon);
-
-    // Complexity indicator
-    const complexity = task.metadata?.complexity || 'medium';
-    let complexityBadge = '';
-    switch (complexity) {
-      case 'simple':
-        complexityBadge = '{green-fg}[S]{/green-fg}';
-        break;
-      case 'medium':
-        complexityBadge = '{yellow-fg}[M]{/yellow-fg}';
-        break;
-      case 'complex':
-        complexityBadge = '{red-fg}[C]{/red-fg}';
-        break;
-    }
-
-    // Task description (truncated)
-    const descMaxWidth = graphWidth - prefix.length - 15;
-    const desc = this._truncate(task.description || 'Task', Math.max(20, descMaxWidth));
-
-    // Status suffix
-    let statusSuffix = '';
-    if (isCurrent) statusSuffix = ' {yellow-fg}[CURRENT]{/yellow-fg}';
-    else if (isNext) statusSuffix = ' {cyan-fg}[NEXT]{/cyan-fg}';
-
-    // Selection marker
-    const selectMarker = isSelected ? '{inverse}' : '';
-    const selectEnd = isSelected ? '{/inverse}' : '';
-
-    // Main task line
-    lines.push(`${selectMarker}${prefix}{${style.fg}-fg}${icon}{/${style.fg}-fg} ${complexityBadge} {white-fg}${desc}{/white-fg}${statusSuffix}${selectEnd}`);
-
-    // Show dependency arrows (peer dependencies)
-    const dependencies = task.metadata?.dependencies || [];
-    if (dependencies.length > 0) {
-      const depPrefix = '  '.repeat(depth) + '  ';
-      const depTasks = dependencies
-        .map(depIdx => this.tasks[depIdx])
-        .filter(Boolean)
-        .map(t => this._truncate(t.description || t.id, 20));
-
-      if (depTasks.length > 0) {
-        lines.push(`${depPrefix}{magenta-fg}└─→ depends on: ${depTasks.join(', ')}{/magenta-fg}`);
-      }
-    }
-  }
-
-  /**
-   * Get siblings of a task (other children of same parent)
-   */
-  _getSiblings(task, taskMap) {
-    if (!task.parentTaskId) {
-      // Root level tasks
-      return this.tasks.filter(t => !t.parentTaskId || !taskMap.has(t.parentTaskId));
-    }
-    const parent = taskMap.get(task.parentTaskId);
-    if (!parent || !parent.subtasks) return [task];
-    return parent.subtasks.map(id => taskMap.get(id)).filter(Boolean);
-  }
-
-  /**
-   * Render task details panel
-   */
-  _renderTaskDetails(lines, task, taskMap, detailWidth, graphStartX) {
-    // Find the line to start inserting details (after header and legend)
-    const insertIndex = 12; // After header, help, and legend
-
-    // Build detail content
-    const detailLines = [];
-    detailLines.push('{bold}Selected Task Details:{/bold}');
-    detailLines.push(`{cyan-fg}${'─'.repeat(Math.min(40, detailWidth))}{/cyan-fg}`);
-    detailLines.push('');
-
-    // Task ID and Status
-    const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
-    detailLines.push(`{white-fg}ID:{/white-fg} {gray-fg}${task.id.substring(0, 25)}{/gray-fg}`);
-    detailLines.push(`{white-fg}Status:{/white-fg} {${style.fg}-fg}${task.status}{/${style.fg}-fg}`);
-
-    // Complexity
-    const complexity = task.metadata?.complexity || 'medium';
-    let complexityColor = 'yellow';
-    if (complexity === 'simple') complexityColor = 'green';
-    else if (complexity === 'complex') complexityColor = 'red';
-    detailLines.push(`{white-fg}Complexity:{/white-fg} {${complexityColor}-fg}${complexity}{/${complexityColor}-fg}`);
-
-    // Description
-    detailLines.push('');
-    detailLines.push('{white-fg}Description:{/white-fg}');
-    const descWrapped = this._wrapText(task.description || 'No description', detailWidth - 2);
-    for (const line of descWrapped.slice(0, 5)) {
-      detailLines.push(`  {gray-fg}${line}{/gray-fg}`);
-    }
-    if (descWrapped.length > 5) {
-      detailLines.push(`  {gray-fg}... (${descWrapped.length - 5} more lines){/gray-fg}`);
-    }
-
-    // Dependencies
-    const dependencies = task.metadata?.dependencies || [];
-    if (dependencies.length > 0) {
-      detailLines.push('');
-      detailLines.push('{white-fg}Dependencies:{/white-fg}');
-      for (const depIdx of dependencies.slice(0, 5)) {
-        const depTask = this.tasks[depIdx];
-        if (depTask) {
-          const depStyle = STATUS_STYLES[depTask.status] || STATUS_STYLES.pending;
-          const depDesc = this._truncate(depTask.description || depTask.id, detailWidth - 8);
-          detailLines.push(`  {${depStyle.fg}-fg}${depStyle.icon}{/${depStyle.fg}-fg} ${depDesc}`);
-        }
-      }
-      if (dependencies.length > 5) {
-        detailLines.push(`  {gray-fg}... and ${dependencies.length - 5} more{/gray-fg}`);
+    for (let d = 0; d < depth; d++) {
+      if (d === depth - 1) {
+        prefix += isLast ? "'-- " : "|-- ";
+      } else {
+        prefix += continuing[d] ? "|   " : "    ";
       }
     }
 
-    // Verification Criteria
-    const criteria = task.metadata?.verificationCriteria || [];
-    if (criteria.length > 0) {
-      detailLines.push('');
-      detailLines.push('{white-fg}Verification Criteria:{/white-fg}');
-      for (const criterion of criteria.slice(0, 8)) {
-        const critText = this._truncate(criterion, detailWidth - 4);
-        detailLines.push(`  {cyan-fg}✓{/cyan-fg} ${critText}`);
-      }
-      if (criteria.length > 8) {
-        detailLines.push(`  {gray-fg}... and ${criteria.length - 8} more{/gray-fg}`);
-      }
-    } else {
-      detailLines.push('');
-      detailLines.push('{gray-fg}No verification criteria defined{/gray-fg}');
-    }
+    const icon = isCurrent ? '*' : (isNext ? '>' : style.icon);
+    const descMaxWidth = Math.max(10, graphWidth - prefix.length - 4);
+    const desc = this._truncate(task.description || 'Task', descMaxWidth);
 
-    // Subtasks
-    const subtaskIds = task.subtasks || [];
-    if (subtaskIds.length > 0) {
-      detailLines.push('');
-      detailLines.push('{white-fg}Subtasks:{/white-fg}');
-      for (const subtaskId of subtaskIds.slice(0, 5)) {
-        const subtask = taskMap.get(subtaskId);
-        if (subtask) {
-          const subStyle = STATUS_STYLES[subtask.status] || STATUS_STYLES.pending;
-          const subDesc = this._truncate(subtask.description || subtaskId, detailWidth - 8);
-          detailLines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subDesc}`);
-        }
-      }
-      if (subtaskIds.length > 5) {
-        detailLines.push(`  {gray-fg}... and ${subtaskIds.length - 5} more{/gray-fg}`);
-      }
-    }
-
-    // Add blank line at end
-    detailLines.push('');
-
-    // Append detail lines to main lines
-    lines.push('');
-    for (const detailLine of detailLines) {
-      lines.push(detailLine);
-    }
-  }
-
-  /**
-   * Render task graph summary
-   */
-  _renderTaskGraphSummary(lines, contentWidth) {
-    const completed = this.tasks.filter(t => t.status === 'completed').length;
-    const inProgress = this.tasks.filter(t => t.status === 'in_progress').length;
-    const failed = this.tasks.filter(t => t.status === 'failed').length;
-    const blocked = this.tasks.filter(t => t.status === 'blocked').length;
-    const pending = this.tasks.filter(t => t.status === 'pending').length;
-    const total = this.tasks.length;
-
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(60, contentWidth - 2))}{/cyan-fg}`);
-    lines.push('{bold}Summary:{/bold}');
-    lines.push(`  {white-fg}Total:{/white-fg} ${total}  {green-fg}Completed:{/green-fg} ${completed}  {yellow-fg}In Progress:{/yellow-fg} ${inProgress}  {gray-fg}Pending:{/gray-fg} ${pending}`);
-    if (failed > 0 || blocked > 0) {
-      lines.push(`  {red-fg}Failed:{/red-fg} ${failed}  {magenta-fg}Blocked:{/magenta-fg} ${blocked}`);
-    }
-
-    // Progress bar
-    if (total > 0) {
-      const progressWidth = Math.min(40, contentWidth - 20);
-      const completedWidth = Math.round((completed / total) * progressWidth);
-      const inProgressWidth = Math.round((inProgress / total) * progressWidth);
-      const failedWidth = Math.round((failed / total) * progressWidth);
-      const remainingWidth = progressWidth - completedWidth - inProgressWidth - failedWidth;
-
-      const progressBar =
-        '{green-fg}' + '█'.repeat(completedWidth) + '{/green-fg}' +
-        '{yellow-fg}' + '█'.repeat(inProgressWidth) + '{/yellow-fg}' +
-        '{red-fg}' + '█'.repeat(failedWidth) + '{/red-fg}' +
-        '{gray-fg}' + '░'.repeat(Math.max(0, remainingWidth)) + '{/gray-fg}';
-
-      const percentage = Math.round((completed / total) * 100);
-      lines.push(`  [${progressBar}] ${percentage}%`);
-    }
-  }
-
-  /**
-   * Render task tree recursively (legacy, kept for left panel)
-   */
-  _renderTaskTree(tasks, taskMap, lines, contentWidth, depth) {
-    for (let i = 0; i < tasks.length; i++) {
-      const task = tasks[i];
-      const isLast = i === tasks.length - 1;
-      const isCurrent = task.id === this.currentTaskId;
-      const isNext = task.id === this.nextTaskId;
-
-      let style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
-      if (isCurrent) style = STATUS_STYLES.in_progress;
-      if (isNext && !isCurrent) style = STATUS_STYLES.next;
-
-      const prefix = depth > 0
-        ? '  '.repeat(depth - 1) + (isLast ? `${TREE_CHARS.corner}${TREE_CHARS.horizontal}` : `${TREE_CHARS.branch}${TREE_CHARS.horizontal}`)
-        : '';
-
-      const icon = isCurrent ? '●' : (isNext ? '▶' : style.icon);
-      const desc = this._truncate(task.description || 'Task', contentWidth - prefix.length - 5);
-
-      let statusSuffix = '';
-      if (isCurrent) statusSuffix = ' {yellow-fg}[CURRENT]{/yellow-fg}';
-      else if (isNext) statusSuffix = ' {cyan-fg}[NEXT]{/cyan-fg}';
-
-      lines.push(`{${style.fg}-fg}${prefix}${icon} ${desc}{/${style.fg}-fg}${statusSuffix}`);
-
-      // Render subtasks
-      const subtaskIds = task.subtasks || [];
-      const subtasks = subtaskIds.map(id => taskMap.get(id)).filter(Boolean);
-      if (subtasks.length > 0) {
-        this._renderTaskTree(subtasks, taskMap, lines, contentWidth, depth + 1);
-      }
-    }
+    // Use visible marker for selection instead of inverse (more reliable)
+    const marker = isSelected ? '>> ' : '   ';
+    const line = `${marker}{gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
+    lines.push(isSelected ? `{bold}${line}{/bold}` : line);
   }
 
   /**
@@ -2263,52 +1852,127 @@ export class TerminalUIMultiView {
     // Apply filters
     const filtered = this._filterCommunicationEntries(allEntries);
 
-    // Link tool results to their calls
-    const linkedEntries = this._linkToolCallsAndResults(filtered);
-
     // Cache for navigation
-    this.commInteractionList = linkedEntries;
+    this.commInteractionList = filtered;
 
     // Ensure selected index is valid
-    if (this.commSelectedIndex >= linkedEntries.length) {
-      this.commSelectedIndex = Math.max(0, linkedEntries.length - 1);
+    if (this.commSelectedIndex >= filtered.length) {
+      this.commSelectedIndex = Math.max(0, filtered.length - 1);
     }
 
-    // Render header with help and filter status
-    this._renderCommHeader(lines, linkedEntries.length, allEntries.length, contentWidth);
-
-    if (linkedEntries.length === 0) {
-      lines.push('');
-      if (this.commFilterAgent || this.commFilterType) {
-        lines.push('{yellow-fg}No messages match current filters{/yellow-fg}');
-        lines.push('{gray-fg}Press x to clear filters{/gray-fg}');
-      } else {
-        lines.push('{gray-fg}No agent communications recorded yet...{/gray-fg}');
-        lines.push('');
-        lines.push('{gray-fg}Communications will appear here when agents:{/gray-fg}');
-        lines.push('{gray-fg}  • Send prompts and receive responses{/gray-fg}');
-        lines.push('{gray-fg}  • Make tool calls{/gray-fg}');
-        lines.push('{gray-fg}  • Interact with each other{/gray-fg}');
-      }
+    if (filtered.length === 0) {
+      lines.push('{gray-fg}No agent communications recorded yet...{/gray-fg}');
       this.viewContent[ViewTypes.COMMUNICATION] = lines;
       return;
     }
 
-    // Render interaction timeline (newest first)
-    const displayOrder = [...linkedEntries].reverse();
+    // Side-by-side layout like Tasks
+    const listWidth = Math.floor(contentWidth * 0.5);
+    const detailWidth = contentWidth - listWidth - 3;
+
+    // Build left column (list)
+    const leftLines = [];
+    const displayOrder = [...filtered].reverse();
     for (let i = 0; i < displayOrder.length; i++) {
       const entry = displayOrder[i];
-      const realIndex = linkedEntries.length - 1 - i;
+      const realIndex = filtered.length - 1 - i;
       const isSelected = realIndex === this.commSelectedIndex;
-      const isExpanded = this.commExpandedItems.has(entry.sequence);
-
-      this._renderCommEntry(lines, entry, isSelected, isExpanded, contentWidth);
+      const time = this._formatTimestamp(entry.timestamp);
+      const agent = entry.agentName || entry.data?.agentName || '?';
+      const type = this._getCommTypeLabel(entry.entryType);
+      const sel = isSelected ? '{inverse}' : '';
+      const selEnd = isSelected ? '{/inverse}' : '';
+      const desc = this._truncate(this._getCommPreview(entry), listWidth - 25);
+      leftLines.push(`${sel}{gray-fg}${time}{/gray-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}${selEnd}`);
     }
 
-    // Render summary
-    this._renderCommSummary(lines, linkedEntries, contentWidth);
+    // Build right column (details of selected)
+    const rightLines = [];
+    if (filtered.length > 0) {
+      const selected = filtered[this.commSelectedIndex];
+      if (selected) {
+        this._renderCommDetails(rightLines, selected, detailWidth);
+      }
+    }
+
+    // Merge columns
+    const maxLines = Math.max(leftLines.length, rightLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      let leftLine = leftLines[i] || '';
+      const rightLine = rightLines[i] || '';
+      const leftClean = this._stripTags(leftLine);
+      if (leftClean.length > listWidth - 1) {
+        leftLine = this._truncateWithTags(leftLine, listWidth - 4) + '...';
+      }
+      const leftLen = this._stripTags(leftLine).length;
+      const padding = Math.max(0, listWidth - leftLen);
+      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
+    }
 
     this.viewContent[ViewTypes.COMMUNICATION] = lines;
+  }
+
+  _getCommTypeLabel(entryType) {
+    const labels = { prompt: '<-', response: '->', tool_call: '!', tool_result: '+', interaction: '<>', phase_change: '#' };
+    return labels[entryType] || '?';
+  }
+
+  _getCommTypeColor(entryType) {
+    const colors = { prompt: 'yellow', response: 'green', tool_call: 'magenta', tool_result: 'cyan', interaction: 'blue', phase_change: 'white' };
+    return colors[entryType] || 'gray';
+  }
+
+  _getCommPreview(entry) {
+    if (entry.data?.content) return entry.data.content;
+    if (entry.data?.toolName) return entry.data.toolName;
+    if (entry.data?.phase) return entry.data.phase;
+    return '';
+  }
+
+  _renderCommDetails(lines, entry, width) {
+    const time = this._formatTimestamp(entry.timestamp);
+    const agent = entry.agentName || entry.data?.agentName || 'unknown';
+
+    lines.push('{white-fg}Details:{/white-fg}');
+    lines.push('─'.repeat(Math.min(40, width)));
+    lines.push(`{white-fg}Type:{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${entry.entryType}{/${this._getCommTypeColor(entry.entryType)}-fg}`);
+    lines.push(`{white-fg}Agent:{/white-fg} {cyan-fg}${agent}{/cyan-fg}`);
+    lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
+    lines.push('');
+
+    if (entry.data?.content) {
+      lines.push('{white-fg}Content:{/white-fg}');
+      const wrapped = this._wrapText(entry.data.content, width - 2);
+      for (const line of wrapped.slice(0, 15)) {
+        lines.push(`  {gray-fg}${line}{/gray-fg}`);
+      }
+      if (wrapped.length > 15) lines.push('  {gray-fg}...{/gray-fg}');
+    }
+
+    if (entry.data?.toolName) {
+      lines.push(`{white-fg}Tool:{/white-fg} {magenta-fg}${entry.data.toolName}{/magenta-fg}`);
+      if (entry.data?.input) {
+        lines.push('{white-fg}Input:{/white-fg}');
+        const inputStr = typeof entry.data.input === 'object' ? JSON.stringify(entry.data.input, null, 2) : String(entry.data.input);
+        for (const line of inputStr.split('\n').slice(0, 10)) {
+          lines.push(`  {gray-fg}${this._truncate(line, width - 4)}{/gray-fg}`);
+        }
+      }
+      if (entry.data?.result) {
+        lines.push('{white-fg}Result:{/white-fg}');
+        const resultStr = typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result, null, 2) : String(entry.data.result);
+        for (const line of resultStr.split('\n').slice(0, 10)) {
+          lines.push(`  {gray-fg}${this._truncate(line, width - 4)}{/gray-fg}`);
+        }
+      }
+    }
+
+    if (entry.data?.toolCalls?.length > 0) {
+      lines.push(`{white-fg}Tool Calls:{/white-fg} ${entry.data.toolCalls.length}`);
+      for (const tc of entry.data.toolCalls.slice(0, 5)) {
+        lines.push(`  {magenta-fg}${tc.name || 'unknown'}{/magenta-fg}`);
+      }
+    }
   }
 
   /**
@@ -2394,19 +2058,7 @@ export class TerminalUIMultiView {
    * Render communication view header
    */
   _renderCommHeader(lines, filteredCount, totalCount, contentWidth) {
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}                  AGENT COMMUNICATION                        {/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('');
-
-    // Show keyboard shortcuts help
-    lines.push('{gray-fg}╭─────────────────────────────────────────────────────────────╮{/gray-fg}');
-    lines.push('{gray-fg}│ {white-fg}Keyboard:{/white-fg}  {cyan-fg}j/↓{/cyan-fg} Next  {cyan-fg}k/↑{/cyan-fg} Prev  {cyan-fg}Enter{/cyan-fg} Expand/Collapse    │{/gray-fg}');
-    lines.push('{gray-fg}│            {cyan-fg}a{/cyan-fg} Filter Agent  {cyan-fg}t{/cyan-fg} Filter Type  {cyan-fg}x{/cyan-fg} Clear Filters │{/gray-fg}');
-    lines.push('{gray-fg}╰─────────────────────────────────────────────────────────────╯{/gray-fg}');
-    lines.push('');
-
-    // Show filter status
+    // Only show filter status if filters are active
     const filterParts = [];
     if (this.commFilterAgent) {
       filterParts.push(`{cyan-fg}Agent: ${this.commFilterAgent}{/cyan-fg}`);
@@ -2417,15 +2069,7 @@ export class TerminalUIMultiView {
 
     if (filterParts.length > 0) {
       lines.push(`{yellow-fg}Filters:{/yellow-fg} ${filterParts.join('  ')}  {gray-fg}(${filteredCount} of ${totalCount}){/gray-fg}`);
-    } else {
-      lines.push(`{gray-fg}Total messages: {bold}${totalCount}{/bold}{/gray-fg}`);
     }
-    lines.push('');
-
-    // Legend
-    lines.push('{bold}Message Types:{/bold}');
-    lines.push('  {yellow-fg}← PROMPT{/yellow-fg}  {green-fg}→ RESPONSE{/green-fg}  {magenta-fg}⚡ TOOL{/magenta-fg}  {cyan-fg}◆ PHASE{/cyan-fg}  {white-fg}⇄ INTERACTION{/white-fg}');
-    lines.push('');
   }
 
   /**
@@ -2433,7 +2077,7 @@ export class TerminalUIMultiView {
    */
   _renderCommEntry(lines, entry, isSelected, isExpanded, contentWidth) {
     const time = this._formatTimestamp(entry.timestamp);
-    const expandIcon = isExpanded ? '▼' : '▶';
+    const expandIcon = isExpanded ? 'v' : '>';
     const selectMarker = isSelected ? '{inverse}' : '';
     const selectEnd = isSelected ? '{/inverse}' : '';
 
@@ -2472,7 +2116,7 @@ export class TerminalUIMultiView {
     const agentName = entry.agentName || entry.data?.agentName || 'unknown';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {yellow-fg}← PROMPT{/yellow-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {yellow-fg}<- PROMPT{/yellow-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
@@ -2483,7 +2127,7 @@ export class TerminalUIMultiView {
       }
       lines.push('{yellow-fg}└──────────────────────────────────────────────────────────{/yellow-fg}');
     } else {
-      const preview = this._truncate(entry.data?.content || '', 60);
+      const preview = this._truncate(entry.data?.content || '', contentWidth - 6);
       lines.push(`  {gray-fg}${preview}{/gray-fg}`);
     }
   }
@@ -2497,7 +2141,7 @@ export class TerminalUIMultiView {
     const toolCalls = entry.data?.toolCalls || [];
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}→ RESPONSE{/green-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}-> RESPONSE{/green-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
@@ -2529,7 +2173,7 @@ export class TerminalUIMultiView {
       }
       lines.push('{green-fg}└──────────────────────────────────────────────────────────{/green-fg}');
     } else {
-      const preview = this._truncate(entry.data?.content || '', 50);
+      const preview = this._truncate(entry.data?.content || '', contentWidth - 20);
       const toolSuffix = toolCalls.length > 0 ? ` {magenta-fg}(${toolCalls.length} tools){/magenta-fg}` : '';
       lines.push(`  {white-fg}${preview}{/white-fg}${toolSuffix}`);
     }
@@ -2544,10 +2188,10 @@ export class TerminalUIMultiView {
     const toolName = entry.data?.toolName || 'unknown';
 
     // Show if this tool call has a linked result
-    const hasResult = entry.linkedToolResult ? ' {green-fg}✓{/green-fg}' : ' {yellow-fg}…{/yellow-fg}';
+    const hasResult = entry.linkedToolResult ? ' {green-fg}+{/green-fg}' : ' {yellow-fg}...{/yellow-fg}';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {magenta-fg}⚡ TOOL CALL{/magenta-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg} → {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${hasResult}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {magenta-fg}! TOOL CALL{/magenta-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg} -> {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${hasResult}${selectEnd}`);
 
     if (isExpanded) {
       lines.push('{magenta-fg}┌─ Tool Call ───────────────────────────────────────────────{/magenta-fg}');
@@ -2586,7 +2230,7 @@ export class TerminalUIMultiView {
     } else {
       // Collapsed preview
       const inputPreview = entry.data?.input
-        ? this._truncate(JSON.stringify(entry.data.input), 50)
+        ? this._truncate(JSON.stringify(entry.data.input), contentWidth - 6)
         : '(no input)';
       lines.push(`  {gray-fg}${inputPreview}{/gray-fg}`);
     }
@@ -2604,7 +2248,7 @@ export class TerminalUIMultiView {
     const callLink = entry.linkedToolCall ? ` {gray-fg}(call #${entry.linkedToolCall.sequence}){/gray-fg}` : '';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}⚡ TOOL RESULT{/green-fg} {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${callLink}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}! TOOL RESULT{/green-fg} {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${callLink}${selectEnd}`);
 
     if (isExpanded) {
       lines.push('{green-fg}┌─ Tool Result ─────────────────────────────────────────────{/green-fg}');
@@ -2624,7 +2268,7 @@ export class TerminalUIMultiView {
       lines.push('{green-fg}└──────────────────────────────────────────────────────────{/green-fg}');
     } else {
       const resultPreview = entry.data?.result
-        ? this._truncate(typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result) : String(entry.data.result), 50)
+        ? this._truncate(typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result) : String(entry.data.result), contentWidth - 6)
         : '(no result)';
       lines.push(`  {gray-fg}${resultPreview}{/gray-fg}`);
     }
@@ -2639,7 +2283,7 @@ export class TerminalUIMultiView {
     const interactionType = entry.data?.type || 'message';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {white-fg}⇄ ${interactionType.toUpperCase()}{/white-fg} {${fromColor}-fg}{bold}${entry.data?.from}{/bold}{/${fromColor}-fg} → {${toColor}-fg}{bold}${entry.data?.to}{/bold}{/${toColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {white-fg}<-> ${interactionType.toUpperCase()}{/white-fg} {${fromColor}-fg}{bold}${entry.data?.from}{/bold}{/${fromColor}-fg} -> {${toColor}-fg}{bold}${entry.data?.to}{/bold}{/${toColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       lines.push('{white-fg}┌─ Interaction ─────────────────────────────────────────────{/white-fg}');
@@ -2663,12 +2307,12 @@ export class TerminalUIMultiView {
         lines.push(`{white-fg}│{/white-fg}`);
         lines.push(`{white-fg}│{/white-fg} {magenta-fg}Tool Calls:{/magenta-fg}`);
         for (const tool of toolCalls) {
-          lines.push(`{white-fg}│{/white-fg}   {magenta-fg}• ${tool.name || 'unknown'}{/magenta-fg}`);
+          lines.push(`{white-fg}│{/white-fg}   {magenta-fg}- ${tool.name || 'unknown'}{/magenta-fg}`);
         }
       }
       lines.push('{white-fg}└──────────────────────────────────────────────────────────{/white-fg}');
     } else {
-      const preview = this._truncate(entry.data?.content || '', 50);
+      const preview = this._truncate(entry.data?.content || '', contentWidth - 6);
       lines.push(`  {gray-fg}${preview}{/gray-fg}`);
     }
   }
@@ -2681,7 +2325,7 @@ export class TerminalUIMultiView {
     const newPhase = entry.data?.newPhase || 'unknown';
 
     lines.push('');
-    lines.push(`${selectMarker}{gray-fg}${time}{/gray-fg} {cyan-fg}◆ PHASE{/cyan-fg} {gray-fg}${prevPhase}{/gray-fg} → {cyan-fg}{bold}${newPhase}{/bold}{/cyan-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{gray-fg}${time}{/gray-fg} {cyan-fg}# PHASE{/cyan-fg} {gray-fg}${prevPhase}{/gray-fg} -> {cyan-fg}{bold}${newPhase}{/bold}{/cyan-fg}${selectEnd}`);
   }
 
   /**
@@ -2712,7 +2356,7 @@ export class TerminalUIMultiView {
   }
 
   /**
-   * Refresh events view content - Enhanced with filtering, categorization, search, and priority levels
+   * Refresh events view content - side-by-side layout
    */
   _refreshEventsView() {
     const lines = [];
@@ -2732,42 +2376,81 @@ export class TerminalUIMultiView {
       this.eventSelectedIndex = Math.max(0, categorizedEvents.length - 1);
     }
 
-    // Render header with controls
-    this._renderEventLogHeader(lines, allEvents.length, categorizedEvents.length, contentWidth);
-
-    // Render category counts summary
-    this._renderEventCategoryCounts(lines, allEvents, contentWidth);
-
     if (categorizedEvents.length === 0) {
-      lines.push('');
-      if (this.eventSearchQuery || this.eventCategoryFilters.size > 0 || this.eventPriorityMode !== 'all') {
-        lines.push('{yellow-fg}No events match current filters{/yellow-fg}');
-        lines.push('{gray-fg}Press x to clear all filters{/gray-fg}');
-      } else {
-        lines.push('{gray-fg}No events recorded yet...{/gray-fg}');
-        lines.push('');
-        lines.push('{gray-fg}Events will appear here when:{/gray-fg}');
-        lines.push('{gray-fg}  • Workflow phases change{/gray-fg}');
-        lines.push('{gray-fg}  • Tasks are created, updated, or completed{/gray-fg}');
-        lines.push('{gray-fg}  • Agents perform actions{/gray-fg}');
-        lines.push('{gray-fg}  • Errors or warnings occur{/gray-fg}');
-      }
+      lines.push('{gray-fg}No events recorded yet...{/gray-fg}');
       this.viewContent[ViewTypes.EVENTS] = lines;
       return;
     }
 
-    lines.push('');
+    // Side-by-side layout
+    const listWidth = Math.floor(contentWidth * 0.5);
+    const detailWidth = contentWidth - listWidth - 3;
 
-    // Render events
+    // Build left column (list)
+    const leftLines = [];
     for (let i = 0; i < categorizedEvents.length; i++) {
       const event = categorizedEvents[i];
       const isSelected = i === this.eventSelectedIndex;
-      const isExpanded = this.eventExpandedItems.has(event.sequence);
+      const time = this._formatTimestamp(event.timestamp);
+      const type = event.data?.type || 'event';
+      const source = event.data?.source || event.agentName || '?';
+      const priority = event._priority || 'info';
+      const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'gray';
+      const sel = isSelected ? '{inverse}' : '';
+      const selEnd = isSelected ? '{/inverse}' : '';
+      const desc = this._truncate(type, listWidth - 20);
+      leftLines.push(`${sel}{gray-fg}${time}{/gray-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}${selEnd}`);
+    }
 
-      this._renderEventEntry(lines, event, isSelected, isExpanded, contentWidth);
+    // Build right column (details)
+    const rightLines = [];
+    if (categorizedEvents.length > 0) {
+      const selected = categorizedEvents[this.eventSelectedIndex];
+      if (selected) {
+        this._renderEventDetails(rightLines, selected, detailWidth);
+      }
+    }
+
+    // Merge columns
+    const maxLines = Math.max(leftLines.length, rightLines.length);
+    for (let i = 0; i < maxLines; i++) {
+      let leftLine = leftLines[i] || '';
+      const rightLine = rightLines[i] || '';
+      const leftClean = this._stripTags(leftLine);
+      if (leftClean.length > listWidth - 1) {
+        leftLine = this._truncateWithTags(leftLine, listWidth - 4) + '...';
+      }
+      const leftLen = this._stripTags(leftLine).length;
+      const padding = Math.max(0, listWidth - leftLen);
+      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
     }
 
     this.viewContent[ViewTypes.EVENTS] = lines;
+  }
+
+  _renderEventDetails(lines, event, width) {
+    const time = this._formatTimestamp(event.timestamp);
+    const type = event.data?.type || 'event';
+    const source = event.data?.source || event.agentName || 'unknown';
+    const priority = event._priority || 'info';
+    const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
+
+    lines.push('{white-fg}Details:{/white-fg}');
+    lines.push('─'.repeat(Math.min(40, width)));
+    lines.push(`{white-fg}Type:{/white-fg} {${color}-fg}${type}{/${color}-fg}`);
+    lines.push(`{white-fg}Source:{/white-fg} {cyan-fg}${source}{/cyan-fg}`);
+    lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
+    lines.push(`{white-fg}Priority:{/white-fg} {${color}-fg}${priority}{/${color}-fg}`);
+    lines.push('');
+
+    if (event.data?.object) {
+      lines.push('{white-fg}Object:{/white-fg}');
+      const objStr = typeof event.data.object === 'object' ? JSON.stringify(event.data.object, null, 2) : String(event.data.object);
+      for (const line of objStr.split('\n').slice(0, 15)) {
+        lines.push(`  {gray-fg}${this._truncate(line, width - 4)}{/gray-fg}`);
+      }
+      if (objStr.split('\n').length > 15) lines.push('  {gray-fg}...{/gray-fg}');
+    }
   }
 
   /**
@@ -2820,23 +2503,10 @@ export class TerminalUIMultiView {
   }
 
   /**
-   * Render event log header with keyboard shortcuts
+   * Render event log header
    */
   _renderEventLogHeader(lines, totalCount, filteredCount, contentWidth) {
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}                      EVENT LOG                              {/cyan-fg}{/bold}');
-    lines.push('{bold}{cyan-fg}═══════════════════════════════════════════════════════════{/cyan-fg}{/bold}');
-    lines.push('');
-
-    // Keyboard shortcuts help
-    lines.push('{gray-fg}╭─────────────────────────────────────────────────────────────╮{/gray-fg}');
-    lines.push('{gray-fg}│ {white-fg}Keyboard:{/white-fg}  {cyan-fg}j/↓{/cyan-fg} Next  {cyan-fg}k/↑{/cyan-fg} Prev  {cyan-fg}Enter{/cyan-fg} Expand/Collapse    │{/gray-fg}');
-    lines.push('{gray-fg}│            {cyan-fg}/{/cyan-fg} Search  {cyan-fg}f{/cyan-fg} Filter Category  {cyan-fg}p{/cyan-fg} Priority Filter │{/gray-fg}');
-    lines.push('{gray-fg}│            {cyan-fg}x{/cyan-fg} Clear All Filters                               │{/gray-fg}');
-    lines.push('{gray-fg}╰─────────────────────────────────────────────────────────────╯{/gray-fg}');
-    lines.push('');
-
-    // Filter status
+    // Only show filter status if filters are active
     const filterParts = [];
     if (this.eventSearchQuery) {
       filterParts.push(`{yellow-fg}Search: "${this.eventSearchQuery}"{/yellow-fg}`);
@@ -2851,44 +2521,7 @@ export class TerminalUIMultiView {
 
     if (filterParts.length > 0) {
       lines.push(`{yellow-fg}Active Filters:{/yellow-fg} ${filterParts.join('  ')}  {gray-fg}(${filteredCount} of ${totalCount} events){/gray-fg}`);
-    } else {
-      lines.push(`{gray-fg}Total events: {bold}${totalCount}{/bold}{/gray-fg}`);
     }
-    lines.push('');
-
-    // Priority legend
-    lines.push('{bold}Priority Levels:{/bold}  {red-fg}❌ ERROR{/red-fg}  {yellow-fg}⚠ WARNING{/yellow-fg}  {white-fg}ℹ INFO{/white-fg}');
-  }
-
-  /**
-   * Render category counts summary
-   */
-  _renderEventCategoryCounts(lines, events, contentWidth) {
-    const counts = {};
-    for (const category of this.eventCategories) {
-      counts[category] = 0;
-    }
-
-    for (const event of events) {
-      const { category } = this._categorizeEvent(event);
-      if (counts[category] !== undefined) {
-        counts[category]++;
-      }
-    }
-
-    lines.push('');
-    lines.push('{bold}Category Counts:{/bold}');
-
-    const categoryLine = this.eventCategories.map(cat => {
-      const icon = this._getEventCategoryIcon(cat);
-      const color = this._getEventCategoryColor(cat);
-      const isHidden = this.eventCategoryFilters.has(cat);
-      const strike = isHidden ? '{strikethrough}' : '';
-      const strikeEnd = isHidden ? '{/strikethrough}' : '';
-      return `${strike}{${color}-fg}${icon} ${cat}: ${counts[cat]}{/${color}-fg}${strikeEnd}`;
-    }).join('  ');
-
-    lines.push(`  ${categoryLine}`);
   }
 
   /**
@@ -2903,14 +2536,14 @@ export class TerminalUIMultiView {
     const categoryColor = this._getEventCategoryColor(event._category);
     const priorityColor = this._getEventPriorityColor(event._priority);
 
-    const expandIcon = isExpanded ? '▼' : '▶';
+    const expandIcon = isExpanded ? 'v' : '>';
     const selectMarker = isSelected ? '{inverse}' : '';
     const selectEnd = isSelected ? '{/inverse}' : '';
 
     // Priority indicator
-    let priorityIcon = 'ℹ';
-    if (event._priority === 'error') priorityIcon = '❌';
-    else if (event._priority === 'warning') priorityIcon = '⚠';
+    let priorityIcon = 'i';
+    if (event._priority === 'error') priorityIcon = 'X';
+    else if (event._priority === 'warning') priorityIcon = '!';
 
     lines.push('');
 
@@ -2979,6 +2612,8 @@ export class TerminalUIMultiView {
    */
   _renderCurrentView() {
     const content = this.viewContent[this.currentView] || [];
+    // Clear before setting to avoid artifacts from previous content
+    this.widgets.mainPanel.setContent('');
     this.widgets.mainPanel.setContent(content.join('\n'));
   }
 
@@ -3014,13 +2649,94 @@ export class TerminalUIMultiView {
   }
 
   /**
+   * Strip blessed tags from text for accurate width calculation
+   */
+  _stripTags(text) {
+    if (!text) return '';
+    return text.replace(/\{[^}]+\}/g, '');
+  }
+
+  /**
+   * Truncate text while trying to preserve tags (simplified version)
+   */
+  _truncateWithTags(text, maxLen) {
+    if (!text) return '';
+    const stripped = this._stripTags(text);
+    if (stripped.length <= maxLen) return text;
+    // Simple approach: strip tags and truncate
+    return stripped.substring(0, maxLen);
+  }
+
+  /**
+   * Render task details column for side-by-side view
+   */
+  _renderTaskDetailsColumn(lines, task, taskMap, detailWidth) {
+    lines.push('{bold}Details:{/bold}');
+    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, detailWidth))}{/cyan-fg}`);
+
+    // Status
+    const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
+    lines.push(`{white-fg}Status:{/white-fg} {${style.fg}-fg}${task.status}{/${style.fg}-fg}`);
+
+    // Complexity
+    const complexity = task.metadata?.complexity || 'medium';
+    let complexityColor = 'yellow';
+    if (complexity === 'simple') complexityColor = 'green';
+    else if (complexity === 'complex') complexityColor = 'red';
+    lines.push(`{white-fg}Complexity:{/white-fg} {${complexityColor}-fg}${complexity}{/${complexityColor}-fg}`);
+
+    // Description
+    lines.push('');
+    lines.push('{white-fg}Description:{/white-fg}');
+    const descWrapped = this._wrapText(task.description || 'No description', detailWidth - 2);
+    for (const line of descWrapped.slice(0, 4)) {
+      lines.push(`  {gray-fg}${line}{/gray-fg}`);
+    }
+    if (descWrapped.length > 4) {
+      lines.push(`  {gray-fg}...{/gray-fg}`);
+    }
+
+    // Verification Criteria
+    const criteria = task.metadata?.verificationCriteria || [];
+    if (criteria.length > 0) {
+      lines.push('');
+      lines.push('{white-fg}Criteria:{/white-fg}');
+      for (const criterion of criteria.slice(0, 4)) {
+        const critText = this._truncate(criterion, detailWidth - 4);
+        lines.push(`  {cyan-fg}+{/cyan-fg} ${critText}`);
+      }
+      if (criteria.length > 4) {
+        lines.push(`  {gray-fg}... +${criteria.length - 4} more{/gray-fg}`);
+      }
+    }
+
+    // Subtasks
+    const subtaskIds = task.subtasks || [];
+    if (subtaskIds.length > 0) {
+      lines.push('');
+      lines.push('{white-fg}Subtasks:{/white-fg}');
+      for (const subtaskId of subtaskIds.slice(0, 3)) {
+        const subtask = taskMap.get(subtaskId);
+        if (subtask) {
+          const subStyle = STATUS_STYLES[subtask.status] || STATUS_STYLES.pending;
+          const subDesc = this._truncate(subtask.description || subtaskId, detailWidth - 6);
+          lines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subDesc}`);
+        }
+      }
+      if (subtaskIds.length > 3) {
+        lines.push(`  {gray-fg}... +${subtaskIds.length - 3} more{/gray-fg}`);
+      }
+    }
+  }
+
+  /**
    * Truncate text
    */
   _truncate(text, width) {
     if (!text || width <= 0) return '';
     const clean = this._sanitizeText(text);
     if (clean.length <= width) return clean;
-    return clean.substring(0, width - 1) + '…';
+    return clean.substring(0, width - 3) + '...';
   }
 
   /**
@@ -3114,45 +2830,12 @@ export class TerminalUIMultiView {
     this.nextTaskId = options.nextTaskId || null;
 
     if (this.initialized) {
-      this._updateTaskPanel();
       if (this.currentView === ViewTypes.TASKS) {
         this._refreshTasksView();
         this._renderCurrentView();
       }
       this.screen.render();
     }
-  }
-
-  /**
-   * Update the left task panel
-   */
-  _updateTaskPanel() {
-    const lines = [];
-    const contentWidth = this._getContentWidth(this.widgets.taskPanel);
-
-    if (this.tasks.length === 0) {
-      lines.push('{gray-fg}No tasks{/gray-fg}');
-    } else {
-      const taskMap = new Map();
-      for (const task of this.tasks) {
-        taskMap.set(task.id, task);
-      }
-
-      const rootTasks = this.tasks.filter(t =>
-        !t.parentTaskId || !taskMap.has(t.parentTaskId)
-      );
-
-      this._renderTaskTree(rootTasks, taskMap, lines, contentWidth, 0);
-
-      // Summary
-      const completed = this.tasks.filter(t => t.status === 'completed').length;
-      const total = this.tasks.length;
-      lines.push('');
-      lines.push(`{gray-fg}${'─'.repeat(Math.min(20, contentWidth - 2))}{/gray-fg}`);
-      lines.push(`{white-fg}${completed}/${total}{/white-fg}`);
-    }
-
-    this.widgets.taskPanel.setContent(lines.join('\n'));
   }
 
   /**
@@ -3312,6 +2995,44 @@ export class TerminalUIMultiView {
     this.historyStore.shutdown();
     this.screen.destroy();
     this.initialized = false;
+  }
+
+  /**
+   * Show completion status and wait for user to quit
+   * @param {boolean} success - Whether the workflow succeeded
+   * @param {number} duration - Duration in milliseconds
+   * @returns {Promise} Resolves when user quits
+   */
+  waitForExit(success, duration) {
+    if (!this.initialized) return Promise.resolve();
+
+    // Stop the spinner
+    this.setBusy(false);
+
+    // Update status bar to show completion
+    const durationStr = Math.round(duration / 1000) + 's';
+    const statusText = success
+      ? `{green-fg}{bold}COMPLETED{/bold}{/green-fg} in ${durationStr}`
+      : `{red-fg}{bold}FAILED{/bold}{/red-fg} after ${durationStr}`;
+
+    const helpText = '{gray-fg}Press q to exit{/gray-fg}';
+
+    this.widgets.statusBar.setContent(
+      ` ${statusText}  │  ${helpText}`
+    );
+    this.screen.render();
+
+    // Return a promise that resolves when user presses q
+    return new Promise((resolve) => {
+      const exitHandler = () => {
+        this.shutdown();
+        resolve();
+      };
+
+      // Override the quit handler to resolve instead of exit
+      this.screen.unkey(['escape', 'q', 'C-c']);
+      this.screen.key(['escape', 'q', 'C-c'], exitHandler);
+    });
   }
 }
 
