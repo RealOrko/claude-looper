@@ -1062,10 +1062,10 @@ describe('Orchestrator - Execution Phase', () => {
 
     orchestrator.agents.supervisor.verify = async () => ({ approved: true, score: 85 });
 
-    const success = await orchestrator._executeTaskWithFixCycle(task);
+    const result = await orchestrator._executeTaskWithFixCycle(task);
 
     // The task should succeed because second test call passes
-    assert.strictEqual(success, true);
+    assert.strictEqual(result.success, true);
     // Only one fix cycle needed since test passes on retry
     assert.strictEqual(fixCycleCount, 1);
   });
@@ -1090,11 +1090,11 @@ describe('Orchestrator - Execution Phase', () => {
       fixCycleCount = cycle;
       return { status: 'success', code: 'fixed code', testsPass: false };
     };
-    orchestrator.agents.tester.test = async () => ({ status: 'failed', errors: ['Test failed'] });
+    orchestrator.agents.tester.test = async () => ({ status: 'failed', failures: [{ error: 'Test failed' }] });
 
-    const success = await orchestrator._executeTaskWithFixCycle(task);
+    const result = await orchestrator._executeTaskWithFixCycle(task);
 
-    assert.strictEqual(success, false);
+    assert.strictEqual(result.success, false);
     assert.strictEqual(fixCycleCount, orchestrator.config.execution.maxFixCycles);
   });
 
@@ -1114,12 +1114,13 @@ describe('Orchestrator - Execution Phase', () => {
     // Mock coder returning blocked
     orchestrator.agents.coder.implement = async () => ({
       status: 'blocked',
-      reason: 'Missing dependency'
+      blockReason: 'Missing dependency'
     });
 
-    const success = await orchestrator._executeTaskWithFixCycle(task);
+    const result = await orchestrator._executeTaskWithFixCycle(task);
 
-    assert.strictEqual(success, false);
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error.includes('Missing dependency'));
   });
 
   it('should handle blocked fixes', async () => {
@@ -1139,13 +1140,14 @@ describe('Orchestrator - Execution Phase', () => {
     orchestrator.agents.coder.implement = async () => ({ status: 'success', code: 'code' });
     orchestrator.agents.coder.applyFix = async () => ({
       status: 'blocked',
-      reason: 'Cannot fix'
+      blockReason: 'Cannot fix'
     });
-    orchestrator.agents.tester.test = async () => ({ status: 'failed', errors: ['Test failed'] });
+    orchestrator.agents.tester.test = async () => ({ status: 'failed', failures: [{ error: 'Test failed' }] });
 
-    const success = await orchestrator._executeTaskWithFixCycle(task);
+    const result = await orchestrator._executeTaskWithFixCycle(task);
 
-    assert.strictEqual(success, false);
+    assert.strictEqual(result.success, false);
+    assert.ok(result.error.includes('Cannot fix'));
   });
 });
 

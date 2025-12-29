@@ -106,6 +106,15 @@ function mockSuccessfulWorkflow(orchestrator) {
     };
   };
 
+  // Mock supervisor.diagnose to replan by default
+  orchestrator.agents.supervisor.diagnose = async (context) => {
+    agentCore.updateAgentState('supervisor', { diagnosesPerformed: (orchestrator.agents.supervisor.agent.state.diagnosesPerformed || 0) + 1 });
+    return {
+      decision: 'replan',
+      reasoning: 'Task needs to be broken down further'
+    };
+  };
+
   // Mock coder.implement
   orchestrator.agents.coder.implement = async (task, context) => {
     agentCore.updateAgentState('coder', { tasksImplemented: orchestrator.agents.coder.agent.state.tasksImplemented + 1 });
@@ -131,6 +140,20 @@ function mockSuccessfulWorkflow(orchestrator) {
       testsFailed: 0,
       failures: [],
       coverage: 85
+    };
+  };
+
+  // Mock planner.replan (shouldn't be needed for success, but just in case)
+  orchestrator.agents.planner.replan = async (task, failureReason) => {
+    const subtask = agentCore.addSubtask('planner', task.id, {
+      description: `Subtask for: ${task.description}`,
+      metadata: { complexity: 'simple' }
+    });
+    agentCore.updateTask('planner', task.id, { status: 'blocked' });
+    return {
+      analysis: 'Breaking down the task',
+      subtasks: [subtask],
+      blockerResolution: 'Created subtask'
     };
   };
 
@@ -181,6 +204,23 @@ function mockFailingWorkflow(orchestrator, options = {}) {
       feedback: 'Approved',
       issues: [],
       escalationLevel: 'none'
+    };
+  };
+
+  // Mock supervisor.diagnose - return impossible after enough attempts to prevent infinite loops
+  let diagnoseCount = 0;
+  orchestrator.agents.supervisor.diagnose = async (context) => {
+    diagnoseCount++;
+    if (diagnoseCount > 3) {
+      return {
+        decision: 'impossible',
+        reasoning: 'Max diagnose attempts reached',
+        blockers: ['Test configured to fail']
+      };
+    }
+    return {
+      decision: 'replan',
+      reasoning: 'Task needs to be broken down further'
     };
   };
 
@@ -243,6 +283,20 @@ function mockFailingWorkflow(orchestrator, options = {}) {
       testsFailed: 0,
       failures: [],
       coverage: 85
+    };
+  };
+
+  // Mock planner.replan to create subtasks without template
+  orchestrator.agents.planner.replan = async (task, failureReason) => {
+    const subtask = agentCore.addSubtask('planner', task.id, {
+      description: `Subtask for: ${task.description}`,
+      metadata: { complexity: 'simple' }
+    });
+    agentCore.updateTask('planner', task.id, { status: 'blocked' });
+    return {
+      analysis: 'Breaking down the task',
+      subtasks: [subtask],
+      blockerResolution: 'Created subtask'
     };
   };
 
@@ -992,6 +1046,21 @@ describe('Integration - Configuration-Driven Behavior', () => {
       score: 85, approved: true, completeness: 'complete', recommendation: 'approve',
       feedback: '', issues: [], escalationLevel: 'none'
     });
+
+    // Mock diagnose to return impossible after a few attempts (prevent infinite loop)
+    let diagnoseCount = 0;
+    orchestrator.agents.supervisor.diagnose = async () => {
+      diagnoseCount++;
+      if (diagnoseCount > 2) {
+        return { decision: 'impossible', reasoning: 'Max attempts', blockers: ['Test config'] };
+      }
+      return { decision: 'replan', reasoning: 'Needs breakdown' };
+    };
+
+    orchestrator.agents.planner.replan = async (task) => {
+      agentCore.updateTask('planner', task.id, { status: 'blocked' });
+      return { analysis: 'Breakdown', subtasks: [], blockerResolution: 'Done' };
+    };
 
     orchestrator.agents.coder.implement = async () => ({
       status: IMPL_STATUS.COMPLETE, summary: 'Done', filesModified: [], testsAdded: []

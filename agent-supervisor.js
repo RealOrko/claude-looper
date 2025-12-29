@@ -38,6 +38,15 @@ const VERIFICATION_TYPES = {
   PROGRESS: 'progress'
 };
 
+// Diagnosis decisions
+const DIAGNOSIS_DECISIONS = {
+  RETRY: 'retry',
+  REPLAN: 'replan',
+  PIVOT: 'pivot',
+  IMPOSSIBLE: 'impossible',
+  CLARIFY: 'clarify'
+};
+
 // Tool definitions for structured responses
 const SUPERVISOR_TOOLS = [
   {
@@ -67,6 +76,17 @@ const SUPERVISOR_TOOLS = [
       { name: 'continueExecution', type: 'boolean' },
       { name: 'abortReason', type: 'string' }
     ]
+  },
+  {
+    name: 'diagnosisComplete',
+    description: 'Signal completion of failure diagnosis',
+    params: [
+      { name: 'decision', type: 'string' },
+      { name: 'reasoning', type: 'string' },
+      { name: 'suggestion', type: 'string' },
+      { name: 'clarification', type: 'string' },
+      { name: 'blockers', type: 'array' }
+    ]
   }
 ];
 
@@ -88,7 +108,8 @@ export class SupervisorAgent {
         verificationsPerformed: 0,
         approvalsGiven: 0,
         rejectionsGiven: 0,
-        escalationCount: 0
+        escalationCount: 0,
+        diagnosesPerformed: 0
       },
       allowExisting: options.allowExisting || false
     });
@@ -308,6 +329,139 @@ export class SupervisorAgent {
   }
 
   /**
+   * Diagnose a stuck task and decide how to proceed
+   * @param {object} context - Diagnosis context
+   */
+  async diagnose(context) {
+    const {
+      goal,
+      task,
+      attempts,
+      completedCount,
+      totalCount,
+      failedCount,
+      replanDepth,
+      maxReplanDepth
+    } = context;
+
+    // Update state
+    agentCore.updateAgentState(this.name, {
+      diagnosesPerformed: this.agent.state.diagnosesPerformed + 1
+    });
+
+    const templateContext = {
+      goal,
+      task,
+      attempts: attempts || [],
+      completedCount: completedCount || 0,
+      totalCount: totalCount || 0,
+      failedCount: failedCount || 0,
+      replanDepth: replanDepth || 0,
+      maxReplanDepth: maxReplanDepth || 3
+    };
+
+    const jsonSchema = {
+      type: 'object',
+      properties: {
+        toolCall: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', const: 'diagnosisComplete' },
+            arguments: {
+              type: 'object',
+              properties: {
+                decision: {
+                  type: 'string',
+                  enum: ['retry', 'replan', 'pivot', 'impossible', 'clarify']
+                },
+                reasoning: { type: 'string' },
+                suggestion: { type: 'string' },
+                clarification: { type: 'string' },
+                blockers: { type: 'array', items: { type: 'string' } }
+              },
+              required: ['decision', 'reasoning']
+            }
+          },
+          required: ['name', 'arguments']
+        }
+      },
+      required: ['toolCall']
+    };
+
+    const result = await agentExecutor.executeWithTemplate(
+      this.name,
+      'supervisor/diagnose.hbs',
+      templateContext,
+      {
+        model: this.model,
+        fallbackModel: this.fallbackModel,
+        jsonSchema
+      }
+    );
+
+    const diagnosis = this._parseDiagnosisResult(result);
+
+    // Record the diagnosis
+    agentCore.recordOutput(this.name, {
+      content: diagnosis,
+      type: 'diagnosis',
+      metadata: {
+        taskId: task?.id,
+        decision: diagnosis.decision,
+        attemptCount: attempts?.length || 0
+      }
+    });
+
+    return diagnosis;
+  }
+
+  /**
+   * Parse diagnosis result from structured output
+   */
+  _parseDiagnosisResult(result) {
+    if (result.structuredOutput?.toolCall?.arguments) {
+      return result.structuredOutput.toolCall.arguments;
+    }
+
+    if (result.toolCalls?.length > 0) {
+      const toolCall = result.toolCalls.find(tc => tc.name === 'diagnosisComplete');
+      if (toolCall) {
+        return toolCall.arguments;
+      }
+    }
+
+    // Fallback: try to infer from response text
+    return this._parseTextDiagnosis(result.response);
+  }
+
+  /**
+   * Fallback text parsing for diagnosis
+   */
+  _parseTextDiagnosis(response) {
+    const lowerResponse = response.toLowerCase();
+
+    let decision = DIAGNOSIS_DECISIONS.REPLAN; // Default to replan
+
+    if (lowerResponse.includes('retry') || lowerResponse.includes('try again')) {
+      decision = DIAGNOSIS_DECISIONS.RETRY;
+    } else if (lowerResponse.includes('pivot') || lowerResponse.includes('different approach')) {
+      decision = DIAGNOSIS_DECISIONS.PIVOT;
+    } else if (lowerResponse.includes('impossible') || lowerResponse.includes('cannot be achieved')) {
+      decision = DIAGNOSIS_DECISIONS.IMPOSSIBLE;
+    } else if (lowerResponse.includes('clarif') || lowerResponse.includes('need more information')) {
+      decision = DIAGNOSIS_DECISIONS.CLARIFY;
+    }
+
+    return {
+      decision,
+      reasoning: response.substring(0, 500),
+      suggestion: decision === DIAGNOSIS_DECISIONS.PIVOT ? 'See reasoning for suggested approach' : undefined,
+      clarification: decision === DIAGNOSIS_DECISIONS.CLARIFY ? 'See reasoning for question' : undefined,
+      blockers: decision === DIAGNOSIS_DECISIONS.IMPOSSIBLE ? ['See reasoning for blockers'] : undefined
+    };
+  }
+
+  /**
    * Parse verification result from structured output
    */
   _parseVerificationResult(result) {
@@ -411,4 +565,4 @@ export class SupervisorAgent {
 }
 
 export default SupervisorAgent;
-export { QUALITY_THRESHOLDS, ESCALATION_LEVELS, VERIFICATION_TYPES };
+export { QUALITY_THRESHOLDS, ESCALATION_LEVELS, VERIFICATION_TYPES, DIAGNOSIS_DECISIONS };

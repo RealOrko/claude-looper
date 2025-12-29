@@ -13,7 +13,7 @@ import agentExecutor from './agent-executor.js';
 import { PlannerAgent } from './agent-planner.js';
 import { CoderAgent } from './agent-coder.js';
 import { TesterAgent } from './agent-tester.js';
-import { SupervisorAgent, VERIFICATION_TYPES } from './agent-supervisor.js';
+import { SupervisorAgent, VERIFICATION_TYPES, DIAGNOSIS_DECISIONS } from './agent-supervisor.js';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -69,6 +69,9 @@ export class Orchestrator {
       planRevisions: 0,
       stepAttempts: 0
     };
+
+    // Track attempt history per task for diagnosis
+    this.taskAttempts = new Map();
   }
 
   /**
@@ -459,91 +462,184 @@ export class Orchestrator {
   async _executeExecutionPhase(plan) {
     this._log(`[Orchestrator] Starting execution phase`);
 
-    const maxGoalIterations = this.config.execution.maxGoalIterations || 5;
-    let goalIteration = 0;
-
-    // Outer loop: keep iterating until goal is complete or max iterations reached
-    while (goalIteration < maxGoalIterations) {
-      goalIteration++;
-      this._log(`[Orchestrator] Goal iteration ${goalIteration}/${maxGoalIterations}`);
-
-      // Inner loop: process all pending tasks
+    // Loop until all tasks are complete or supervisor says to stop
+    while (true) {
+      // Get next pending task
       let task = this.agents.planner.getNextTask();
 
-      while (task) {
-        this._log(`[Orchestrator] Executing task: ${task.description}`);
+      if (!task) {
+        // No pending tasks - check if there are failed tasks to diagnose
+        const goalId = this.agents.planner.currentPlan?.goalId;
+        const failedTasks = this.agents.planner.agent.tasks.filter(
+          t => t.status === 'failed' && t.parentGoalId === goalId
+        );
 
-        // Update task status
-        agentCore.updateTask('planner', task.id, { status: 'in_progress' });
-
-        // Execute task with fix cycle
-        const success = await this._executeTaskWithFixCycle(task);
-
-        if (success) {
-          this.agents.planner.markTaskComplete(task.id, { completedAt: Date.now() });
-        } else {
-          const { needsReplan } = this.agents.planner.markTaskFailed(task.id, 'Max attempts exceeded');
-
-          if (needsReplan) {
-            this._log(`[Orchestrator] Task needs re-planning`);
-            await this.agents.planner.replan(task, 'Max attempts exceeded');
-          } else {
-            // Mark as evaluated so we don't force replan later
-            agentCore.updateTask('planner', task.id, {
-              metadata: { ...task.metadata, replanEvaluated: true }
-            });
-          }
-        }
-
-        // Snapshot after each task for resumability
-        this._snapshot();
-
-        // Check time budget
-        if (this._isTimeBudgetExceeded()) {
-          this._log(`[Orchestrator] Time budget exceeded`);
+        if (failedTasks.length === 0) {
+          this._log(`[Orchestrator] All tasks completed`);
           break;
         }
 
-        // Get next task
-        task = this.agents.planner.getNextTask();
+        // Diagnose the first failed task
+        task = failedTasks[0];
+        this._log(`[Orchestrator] Diagnosing failed task: ${task.description}`);
+
+        const diagnosis = await this._diagnoseAndHandle(task);
+
+        if (diagnosis.stop) {
+          this._log(`[Orchestrator] Stopping: ${diagnosis.reason}`);
+          break;
+        }
+
+        // Continue the loop - diagnosis may have created new tasks or reset the failed one
+        continue;
       }
 
-      // Check if time budget exceeded
-      if (this._isTimeBudgetExceeded()) {
+      this._log(`[Orchestrator] Executing task: ${task.description}`);
+
+      // Update task status
+      agentCore.updateTask('planner', task.id, { status: 'in_progress' });
+
+      // Execute task with fix cycle
+      const result = await this._executeTaskWithFixCycle(task);
+
+      if (result.success) {
+        this.agents.planner.markTaskComplete(task.id, { completedAt: Date.now() });
+      } else {
+        // Record this attempt
+        this._recordAttempt(task.id, {
+          approach: result.approach,
+          result: result.result,
+          error: result.error
+        });
+
+        // Mark task as failed (will be diagnosed on next iteration)
+        this.agents.planner.markTaskFailed(task.id, result.error);
+      }
+
+      // Snapshot after each task for resumability
+      this._snapshot();
+
+      // Check time budget (if configured)
+      if (this.config.execution.timeLimit > 0 && this._isTimeBudgetExceeded()) {
+        this._log(`[Orchestrator] Time budget exceeded`);
         break;
       }
-
-      // Check for failed tasks that could benefit from retry
-      const goalId = this.agents.planner.currentPlan?.goalId;
-      const failedTasks = this.agents.planner.agent.tasks.filter(
-        t => t.status === 'failed' &&
-             t.parentGoalId === goalId &&
-             !t.metadata?.replanEvaluated &&
-             (t.attempts || 0) < (this.config.planner?.settings?.attemptsBeforeReplan || 3)
-      );
-
-      if (failedTasks.length === 0) {
-        this._log(`[Orchestrator] All tasks completed or exhausted retries`);
-        break;
-      }
-
-      this._log(`[Orchestrator] ${failedTasks.length} failed task(s) - forcing replan`);
-
-      // Force replan on failed tasks (creates subtasks that become pending)
-      for (const failedTask of failedTasks) {
-        await this.agents.planner.replan(failedTask, `Retry iteration ${goalIteration}`);
-      }
-    }
-
-    if (goalIteration >= maxGoalIterations) {
-      this._log(`[Orchestrator] Max goal iterations reached with incomplete tasks`);
     }
 
     this._log(`[Orchestrator] Execution phase complete`);
   }
 
   /**
+   * Diagnose a failed task and handle the decision
+   * @returns {object} { stop: boolean, reason?: string }
+   */
+  async _diagnoseAndHandle(task) {
+    const attempts = this._getAttemptHistory(task.id);
+    const state = this._getDiagnosisState();
+
+    const diagnosis = await this.agents.supervisor.diagnose({
+      goal: this.goal,
+      task,
+      attempts,
+      ...state
+    });
+
+    this._log(`[Orchestrator] Diagnosis: ${diagnosis.decision} - ${diagnosis.reasoning}`);
+
+    switch (diagnosis.decision) {
+      case DIAGNOSIS_DECISIONS.RETRY:
+        // Reset task to pending and clear its failed status
+        this._log(`[Orchestrator] Retrying task`);
+        agentCore.updateTask('planner', task.id, { status: 'pending' });
+        return { stop: false };
+
+      case DIAGNOSIS_DECISIONS.REPLAN:
+        // Break task into subtasks
+        this._log(`[Orchestrator] Replanning task into subtasks`);
+        await this.agents.planner.replan(task, diagnosis.reasoning);
+        return { stop: false };
+
+      case DIAGNOSIS_DECISIONS.PIVOT:
+        // Create a fresh plan with a different approach
+        this._log(`[Orchestrator] Pivoting to new approach: ${diagnosis.suggestion}`);
+        await this._pivot(diagnosis.suggestion);
+        return { stop: false };
+
+      case DIAGNOSIS_DECISIONS.CLARIFY:
+        // Need user input - pause execution
+        this._log(`[Orchestrator] Clarification needed: ${diagnosis.clarification}`);
+        this.status = EXECUTION_STATUS.PAUSED;
+        this.pauseReason = {
+          type: 'clarification',
+          question: diagnosis.clarification,
+          taskId: task.id
+        };
+        return { stop: true, reason: `Clarification needed: ${diagnosis.clarification}` };
+
+      case DIAGNOSIS_DECISIONS.IMPOSSIBLE:
+        // Goal cannot be achieved
+        this._log(`[Orchestrator] Goal impossible: ${diagnosis.blockers?.join(', ')}`);
+        return { stop: true, reason: `Goal impossible: ${diagnosis.blockers?.join(', ')}` };
+
+      default:
+        // Unknown decision - default to replan
+        this._log(`[Orchestrator] Unknown diagnosis decision: ${diagnosis.decision}, defaulting to replan`);
+        await this.agents.planner.replan(task, diagnosis.reasoning);
+        return { stop: false };
+    }
+  }
+
+  /**
+   * Pivot to a new approach by creating a fresh plan
+   */
+  async _pivot(suggestion) {
+    // Mark all pending/failed tasks as blocked (they're from the old approach)
+    const goalId = this.agents.planner.currentPlan?.goalId;
+    const tasks = this.agents.planner.agent.tasks.filter(
+      t => t.parentGoalId === goalId && (t.status === 'pending' || t.status === 'failed')
+    );
+
+    for (const task of tasks) {
+      agentCore.updateTask('planner', task.id, {
+        status: 'blocked',
+        metadata: { ...task.metadata, blockedReason: 'Pivot to new approach' }
+      });
+    }
+
+    // Create a fresh plan with the suggested approach
+    const newPlan = await this.agents.planner.createPlan(this.goal, {
+      previousAttempts: this._summarizeAttempts(),
+      suggestedApproach: suggestion,
+      instruction: 'Previous approaches failed. Try this different strategy.'
+    });
+
+    this._log(`[Orchestrator] Pivot created ${newPlan.tasks.length} new tasks`);
+  }
+
+  /**
+   * Summarize all attempts for context in pivot
+   */
+  _summarizeAttempts() {
+    const summary = [];
+    for (const [taskId, attempts] of this.taskAttempts.entries()) {
+      const task = this.agents.planner.agent.tasks.find(t => t.id === taskId);
+      if (task && attempts.length > 0) {
+        summary.push({
+          task: task.description,
+          attempts: attempts.map(a => ({
+            approach: a.approach,
+            result: a.result,
+            error: a.error
+          }))
+        });
+      }
+    }
+    return summary;
+  }
+
+  /**
    * Execute a single task with fix cycles
+   * @returns {object} { success: boolean, error?: string, implementation?: object }
    */
   async _executeTaskWithFixCycle(task) {
     const maxFixCycles = this.config.execution.maxFixCycles;
@@ -556,7 +652,12 @@ export class Orchestrator {
     });
 
     if (implementation.status === 'blocked') {
-      return false;
+      return {
+        success: false,
+        error: implementation.blockReason || 'Implementation blocked',
+        approach: 'Initial implementation',
+        result: 'blocked'
+      };
     }
 
     // Tester tests
@@ -570,7 +671,12 @@ export class Orchestrator {
       const fix = await this.agents.coder.applyFix(task, testResult, fixCycle, maxFixCycles);
 
       if (fix.status === 'blocked') {
-        return false;
+        return {
+          success: false,
+          error: fix.blockReason || 'Fix blocked',
+          approach: `Fix attempt ${fixCycle}`,
+          result: 'blocked'
+        };
       }
 
       if (fix.testsPass) {
@@ -594,10 +700,86 @@ export class Orchestrator {
         }
       );
 
-      return verification.approved;
+      if (!verification.approved) {
+        return {
+          success: false,
+          error: verification.feedback || 'Supervisor rejected',
+          approach: 'Implementation with passing tests',
+          result: 'rejected by supervisor'
+        };
+      }
+
+      return { success: true };
     }
 
-    return testResult.status === 'passed';
+    if (testResult.status === 'passed') {
+      return { success: true };
+    }
+
+    // Tests still failing after max fix cycles
+    const failureDetails = testResult.failures?.map(f => f.error).join('; ') || 'Tests failed';
+    return {
+      success: false,
+      error: failureDetails,
+      approach: `Implementation with ${fixCycle} fix attempts`,
+      result: 'tests still failing'
+    };
+  }
+
+  /**
+   * Record an attempt for a task
+   */
+  _recordAttempt(taskId, attemptInfo) {
+    if (!this.taskAttempts.has(taskId)) {
+      this.taskAttempts.set(taskId, []);
+    }
+    const attempts = this.taskAttempts.get(taskId);
+    attempts.push({
+      attemptNumber: attempts.length + 1,
+      ...attemptInfo,
+      timestamp: Date.now()
+    });
+  }
+
+  /**
+   * Get attempt history for a task
+   */
+  _getAttemptHistory(taskId) {
+    return this.taskAttempts.get(taskId) || [];
+  }
+
+  /**
+   * Get current state for diagnosis
+   */
+  _getDiagnosisState() {
+    const tasks = this.agents.planner.agent.tasks;
+    const goalId = this.agents.planner.currentPlan?.goalId;
+    const goalTasks = tasks.filter(t => t.parentGoalId === goalId);
+
+    return {
+      completedCount: goalTasks.filter(t => t.status === 'completed').length,
+      totalCount: goalTasks.length,
+      failedCount: goalTasks.filter(t => t.status === 'failed').length,
+      replanDepth: this._getReplanDepth(goalTasks),
+      maxReplanDepth: this.config.planner?.settings?.maxReplanDepth || 3
+    };
+  }
+
+  /**
+   * Calculate the current replan depth
+   */
+  _getReplanDepth(tasks) {
+    let maxDepth = 0;
+    for (const task of tasks) {
+      let depth = 0;
+      let current = task;
+      while (current.parentTaskId) {
+        depth++;
+        current = tasks.find(t => t.id === current.parentTaskId) || { parentTaskId: null };
+      }
+      maxDepth = Math.max(maxDepth, depth);
+    }
+    return maxDepth;
   }
 
   /**

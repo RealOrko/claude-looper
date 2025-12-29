@@ -15,7 +15,7 @@
 import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
 import agentCore from './agent-core.js';
-import { SupervisorAgent, QUALITY_THRESHOLDS, ESCALATION_LEVELS, VERIFICATION_TYPES } from './agent-supervisor.js';
+import { SupervisorAgent, QUALITY_THRESHOLDS, ESCALATION_LEVELS, VERIFICATION_TYPES, DIAGNOSIS_DECISIONS } from './agent-supervisor.js';
 
 describe('SupervisorAgent - Constants', () => {
   it('should export QUALITY_THRESHOLDS constants', () => {
@@ -655,5 +655,172 @@ describe('SupervisorAgent - Edge Cases', () => {
     // Should fall back to text parsing
     assert.ok(parsed);
     assert.strictEqual(parsed.score, 55);
+  });
+});
+
+// =============================================================================
+// Diagnosis Tests
+// =============================================================================
+
+describe('SupervisorAgent - Diagnosis Constants', () => {
+  it('should export DIAGNOSIS_DECISIONS constants', () => {
+    assert.strictEqual(DIAGNOSIS_DECISIONS.RETRY, 'retry');
+    assert.strictEqual(DIAGNOSIS_DECISIONS.REPLAN, 'replan');
+    assert.strictEqual(DIAGNOSIS_DECISIONS.PIVOT, 'pivot');
+    assert.strictEqual(DIAGNOSIS_DECISIONS.IMPOSSIBLE, 'impossible');
+    assert.strictEqual(DIAGNOSIS_DECISIONS.CLARIFY, 'clarify');
+  });
+});
+
+describe('SupervisorAgent - Diagnosis Result Parsing', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should parse structured diagnosis result', () => {
+    const result = {
+      structuredOutput: {
+        toolCall: {
+          name: 'diagnosisComplete',
+          arguments: {
+            decision: 'replan',
+            reasoning: 'Task is too complex',
+            suggestion: null,
+            clarification: null,
+            blockers: null
+          }
+        }
+      }
+    };
+
+    const parsed = supervisor._parseDiagnosisResult(result);
+
+    assert.strictEqual(parsed.decision, 'replan');
+    assert.strictEqual(parsed.reasoning, 'Task is too complex');
+  });
+
+  it('should parse diagnosis from toolCalls array', () => {
+    const result = {
+      toolCalls: [
+        {
+          name: 'diagnosisComplete',
+          arguments: {
+            decision: 'pivot',
+            reasoning: 'Wrong approach',
+            suggestion: 'Try a different strategy'
+          }
+        }
+      ]
+    };
+
+    const parsed = supervisor._parseDiagnosisResult(result);
+
+    assert.strictEqual(parsed.decision, 'pivot');
+    assert.strictEqual(parsed.suggestion, 'Try a different strategy');
+  });
+
+  it('should parse impossible diagnosis with blockers', () => {
+    const result = {
+      structuredOutput: {
+        toolCall: {
+          name: 'diagnosisComplete',
+          arguments: {
+            decision: 'impossible',
+            reasoning: 'Cannot be done',
+            blockers: ['Missing API', 'No permissions']
+          }
+        }
+      }
+    };
+
+    const parsed = supervisor._parseDiagnosisResult(result);
+
+    assert.strictEqual(parsed.decision, 'impossible');
+    assert.deepStrictEqual(parsed.blockers, ['Missing API', 'No permissions']);
+  });
+
+  it('should parse clarify diagnosis with question', () => {
+    const result = {
+      structuredOutput: {
+        toolCall: {
+          name: 'diagnosisComplete',
+          arguments: {
+            decision: 'clarify',
+            reasoning: 'Ambiguous requirements',
+            clarification: 'Should the API be REST or GraphQL?'
+          }
+        }
+      }
+    };
+
+    const parsed = supervisor._parseDiagnosisResult(result);
+
+    assert.strictEqual(parsed.decision, 'clarify');
+    assert.strictEqual(parsed.clarification, 'Should the API be REST or GraphQL?');
+  });
+});
+
+describe('SupervisorAgent - Text Diagnosis Parsing', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should detect retry from text', () => {
+    const response = 'We should try again as this appears to be a transient error';
+    const parsed = supervisor._parseTextDiagnosis(response);
+
+    assert.strictEqual(parsed.decision, 'retry');
+  });
+
+  it('should detect pivot from text', () => {
+    const response = 'We need a different approach to solve this problem';
+    const parsed = supervisor._parseTextDiagnosis(response);
+
+    assert.strictEqual(parsed.decision, 'pivot');
+  });
+
+  it('should detect impossible from text', () => {
+    const response = 'This goal cannot be achieved with current constraints';
+    const parsed = supervisor._parseTextDiagnosis(response);
+
+    assert.strictEqual(parsed.decision, 'impossible');
+  });
+
+  it('should detect clarify from text', () => {
+    const response = 'We need more information and clarification on requirements';
+    const parsed = supervisor._parseTextDiagnosis(response);
+
+    assert.strictEqual(parsed.decision, 'clarify');
+  });
+
+  it('should default to replan when no clear decision', () => {
+    const response = 'The task has some issues that need addressing';
+    const parsed = supervisor._parseTextDiagnosis(response);
+
+    assert.strictEqual(parsed.decision, 'replan');
+  });
+});
+
+describe('SupervisorAgent - Diagnosis State', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should initialize diagnosesPerformed to 0', () => {
+    assert.strictEqual(supervisor.agent.state.diagnosesPerformed, 0);
+  });
+
+  it('should include diagnosesPerformed in stats', () => {
+    const stats = supervisor.getStats();
+    assert.ok('diagnosesPerformed' in stats);
   });
 });
