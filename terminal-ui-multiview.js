@@ -2908,11 +2908,8 @@ export class TerminalUIMultiView {
       });
     }
 
-    // Record tool calls from structuredOutput or toolCalls array
+    // Record tool calls - they're already extracted from structuredOutput by agent-executor
     const toolCalls = result.toolCalls || [];
-    if (result.structuredOutput?.toolCall) {
-      toolCalls.push(result.structuredOutput.toolCall);
-    }
 
     for (const toolCall of toolCalls) {
       if (toolCall.name) {
