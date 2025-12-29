@@ -263,8 +263,10 @@ export class TerminalUIMultiView {
       : '';
     const phaseName = PHASE_NAMES[this.phase] || this.phase || '';
     const phaseText = phaseName ? ` {yellow-fg}[${phaseName}]{/yellow-fg}` : '';
+
+    // Blue bounded box for title
     this.widgets.header.setContent(
-      `${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}${phaseText}  ${tabs.join('  ')}`
+      `{blue-fg}[{/blue-fg}${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}{blue-fg}]{/blue-fg}${phaseText}  ${tabs.join('  ')}`
     );
   }
 
@@ -276,8 +278,9 @@ export class TerminalUIMultiView {
 
     const helpText = '{gray-fg}Tab: Views | jk: Scroll | r: Refresh | q: Quit{/gray-fg}';
 
+    // Blue bounded box for footer
     this.widgets.statusBar.setContent(
-      ` {bold}${viewConfig.description}{/bold}  │  ${helpText}`
+      `{blue-fg}[{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}]{/blue-fg}  │  ${helpText}`
     );
   }
 
@@ -1833,9 +1836,8 @@ export class TerminalUIMultiView {
     const descMaxWidth = Math.max(10, graphWidth - prefix.length - 4);
     const desc = this._truncate(task.description || 'Task', descMaxWidth);
 
-    // Use visible marker for selection instead of inverse (more reliable)
-    const marker = isSelected ? '>> ' : '   ';
-    const line = `${marker}{gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
+    // Use bold for selection (no >> marker)
+    const line = `   {gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
     lines.push(isSelected ? `{bold}${line}{/bold}` : line);
   }
 
@@ -1880,10 +1882,10 @@ export class TerminalUIMultiView {
       const time = this._formatTimestamp(entry.timestamp);
       const agent = entry.agentName || entry.data?.agentName || '?';
       const type = this._getCommTypeLabel(entry.entryType);
-      const sel = isSelected ? '{inverse}' : '';
-      const selEnd = isSelected ? '{/inverse}' : '';
       const desc = this._truncate(this._getCommPreview(entry), listWidth - 25);
-      leftLines.push(`${sel}{gray-fg}${time}{/gray-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}${selEnd}`);
+      // Use bold for selection (same style as task tree)
+      const line = `{gray-fg}${time}{/gray-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}`;
+      leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
     }
 
     // Build right column (details of selected)
@@ -1933,8 +1935,8 @@ export class TerminalUIMultiView {
     const time = this._formatTimestamp(entry.timestamp);
     const agent = entry.agentName || entry.data?.agentName || 'unknown';
 
-    lines.push('{white-fg}Details:{/white-fg}');
-    lines.push('─'.repeat(Math.min(40, width)));
+    lines.push('{bold}Details:{/bold}');
+    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, width))}{/cyan-fg}`);
     lines.push(`{white-fg}Type:{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${entry.entryType}{/${this._getCommTypeColor(entry.entryType)}-fg}`);
     lines.push(`{white-fg}Agent:{/white-fg} {cyan-fg}${agent}{/cyan-fg}`);
     lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
@@ -2396,10 +2398,10 @@ export class TerminalUIMultiView {
       const source = event.data?.source || event.agentName || '?';
       const priority = event._priority || 'info';
       const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'gray';
-      const sel = isSelected ? '{inverse}' : '';
-      const selEnd = isSelected ? '{/inverse}' : '';
       const desc = this._truncate(type, listWidth - 20);
-      leftLines.push(`${sel}{gray-fg}${time}{/gray-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}${selEnd}`);
+      // Use bold for selection (same style as task tree)
+      const line = `{gray-fg}${time}{/gray-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}`;
+      leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
     }
 
     // Build right column (details)
@@ -2435,8 +2437,8 @@ export class TerminalUIMultiView {
     const priority = event._priority || 'info';
     const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
 
-    lines.push('{white-fg}Details:{/white-fg}');
-    lines.push('─'.repeat(Math.min(40, width)));
+    lines.push('{bold}Details:{/bold}');
+    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, width))}{/cyan-fg}`);
     lines.push(`{white-fg}Type:{/white-fg} {${color}-fg}${type}{/${color}-fg}`);
     lines.push(`{white-fg}Source:{/white-fg} {cyan-fg}${source}{/cyan-fg}`);
     lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
