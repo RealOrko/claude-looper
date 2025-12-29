@@ -2919,9 +2919,13 @@ export class TerminalUIMultiView {
   recordAgentResult(agentName, result) {
     if (!result) return;
 
-    // Record the response
-    if (result.response) {
-      this.historyStore.addResponse(agentName, result.response, {
+    // Record the response - stringify if it's an object
+    const responseContent = result.response
+      ? (typeof result.response === 'string' ? result.response : JSON.stringify(result.response))
+      : null;
+
+    if (responseContent) {
+      this.historyStore.addResponse(agentName, responseContent, {
         taskId: this.currentTaskId,
         costUsd: result.costUsd,
         duration: result.duration,
