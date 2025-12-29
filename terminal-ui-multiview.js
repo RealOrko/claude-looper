@@ -193,8 +193,7 @@ export class TerminalUIMultiView {
       height: 1,
       tags: true,
       style: {
-        fg: 'white',
-        bg: 'black'
+        fg: 'white'
       }
     });
 
@@ -235,8 +234,7 @@ export class TerminalUIMultiView {
       height: 1,
       tags: true,
       style: {
-        fg: 'white',
-        bg: 'black'
+        fg: 'white'
       }
     });
 
@@ -264,9 +262,9 @@ export class TerminalUIMultiView {
     const phaseName = PHASE_NAMES[this.phase] || this.phase || '';
     const phaseText = phaseName ? ` {yellow-fg}[${phaseName}]{/yellow-fg}` : '';
 
-    // Blue bounded box for title
+    // Blue bounded box for title using box-drawing characters
     this.widgets.header.setContent(
-      `{blue-fg}[{/blue-fg}${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}{blue-fg}]{/blue-fg}${phaseText}  ${tabs.join('  ')}`
+      `{blue-fg}│{/blue-fg}${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}{blue-fg}│{/blue-fg}${phaseText}  ${tabs.join('  ')}`
     );
   }
 
@@ -278,9 +276,9 @@ export class TerminalUIMultiView {
 
     const helpText = '{gray-fg}Tab: Views | jk: Scroll | r: Refresh | q: Quit{/gray-fg}';
 
-    // Blue bounded box for footer
+    // Blue bounded box for footer using box-drawing characters
     this.widgets.statusBar.setContent(
-      `{blue-fg}[{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}]{/blue-fg}  │  ${helpText}`
+      `{blue-fg}│{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}│{/blue-fg}  │  ${helpText}`
     );
   }
 
