@@ -152,6 +152,9 @@ export class TerminalUIMultiView {
       warnings: false
     });
 
+    // Hide the terminal cursor to prevent flashing during updates
+    this.screen.program.hideCursor();
+
     this._createLayout();
     this._setupKeyboardShortcuts();
 
@@ -2985,6 +2988,7 @@ export class TerminalUIMultiView {
     }
 
     this.historyStore.shutdown();
+    this.screen.program.showCursor();
     this.screen.destroy();
     this.initialized = false;
     process.exit(0);
@@ -3007,6 +3011,7 @@ export class TerminalUIMultiView {
     }
 
     this.historyStore.shutdown();
+    this.screen.program.showCursor();
     this.screen.destroy();
     this.initialized = false;
   }
