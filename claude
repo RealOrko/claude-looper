@@ -23,5 +23,10 @@ docker run $TTY_FLAGS --rm \
     --user "$(id -u):$(id -g)" \
     -v "$(pwd):/home/claude/workspace" \
     -v "$HOME/.ssh:/home/claude/.ssh:ro" \
+    -v "$SSH_AUTH_SOCK:/ssh-agent" \
+    -e SSH_AUTH_SOCK=/ssh-agent \
+    -v "$HOME/.claude:/home/claude/.claude:rw" \
+    -v "$HOME/.claude.json:/home/claude/.claude.json:rw" \
+    -v "$HOME/.gitconfig:/home/claude/.gitconfig:ro" \
     -v "/tmp:/tmp" \
     claude-code claude "--dangerously-skip-permissions"

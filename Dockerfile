@@ -24,6 +24,7 @@ RUN apt-get update && apt-get install -y \
     software-properties-common \
     locales \
     sudo \
+    direnv \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python latest (via deadsnakes PPA for latest version)
@@ -123,7 +124,10 @@ RUN echo '# Environment variables' >> /home/claude/.bashrc \
     && echo '' >> /home/claude/.bashrc \
     && echo '# Aliases' >> /home/claude/.bashrc \
     && echo 'alias ll="ls -la"' >> /home/claude/.bashrc \
-    && echo 'alias py="python"' >> /home/claude/.bashrc
+    && echo 'alias py="python"' >> /home/claude/.bashrc \
+    && echo '' >> /home/claude/.bashrc \
+    && echo '# direnv' >> /home/claude/.bashrc \
+    && echo 'eval "$(direnv hook bash)"' >> /home/claude/.bashrc
 
 # Also create .profile for login shells
 RUN cp /home/claude/.bashrc /home/claude/.profile
