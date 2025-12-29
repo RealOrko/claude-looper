@@ -1,236 +1,198 @@
-# Claude Looper Workflow
+# 🔄 Claude Looper Workflow
 
-This document describes the multi-agent workflow orchestrated by Claude Looper, including agent transitions, the intelligent diagnosis system, and how the system iterates until goals are achieved.
+Multi-agent workflow orchestrated by Claude Looper with intelligent diagnosis and iteration until goals are achieved.
 
-## Overview
-
-Claude Looper uses four specialized agents coordinated by an orchestrator to achieve goals autonomously:
+## 🎯 Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                         ORCHESTRATOR                            │
+│                      🎯 ORCHESTRATOR                            │
 │                                                                 │
 │  ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐  │
-│  │ PLANNER  │───▶│  CODER   │───▶│  TESTER  │───▶│SUPERVISOR│  │
+│  │📝 PLANNER│───▶│💻 CODER  │───▶│🧪 TESTER │───▶│👁️SUPERVISOR│ │
 │  └──────────┘    └──────────┘    └──────────┘    └──────────┘  │
 │       │              ▲                │               │         │
-│       │              │                │               │         │
 │       │              └────────────────┘               │         │
-│       │                  fix loop                     │         │
-│       │                                               │         │
+│       │                 🔧 fix loop                   │         │
 │       │◀──────────────────────────────────────────────┘         │
-│       │              diagnosis decisions                        │
+│                      🔍 diagnosis decisions                     │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## Core Philosophy: Iterate Until Done
+## 💪 Core Philosophy: Iterate Until Done
 
-Claude Looper is designed to **never give up arbitrarily**. Instead of hard-coded limits that terminate execution, it uses an intelligent Supervisor agent to diagnose problems and decide how to proceed. The only valid terminations are:
+Claude Looper **never gives up arbitrarily**. The only valid terminations are:
 
-1. **Goal achieved** - Success
-2. **Goal impossible** - Supervisor explicitly determines the goal cannot be achieved
-3. **Clarification needed** - User input required to proceed
-4. **User abort** - Manual intervention
+| Outcome | Description |
+|---------|-------------|
+| ✅ **Goal achieved** | Success! |
+| ❌ **Goal impossible** | Supervisor determines it can't be done |
+| ❓ **Clarification needed** | User input required |
+| 🛑 **User abort** | Manual intervention |
 
-## Workflow Phases
+## 📋 Workflow Phases
 
-### Phase 1: Planning
+### 1️⃣ Planning
 ```
-Goal ──▶ PLANNER ──▶ Plan (3-8 tasks)
-```
-
-The Planner breaks down the goal into discrete, actionable tasks.
-
-### Phase 2: Plan Review (if enabled)
-```
-Plan ──▶ SUPERVISOR ──▶ Approved? ──┬──▶ Yes: Continue to Execution
-                                    │
-                                    └──▶ No: Revise Plan
+🎯 Goal ──▶ 📝 PLANNER ──▶ 📋 Plan (3-8 tasks)
 ```
 
-### Phase 3: Execution with Diagnosis
+### 2️⃣ Plan Review
+```
+📋 Plan ──▶ 👁️ SUPERVISOR ──▶ Approved? ──┬──▶ ✅ Continue
+                                          └──▶ 🔄 Revise
+```
 
-The execution phase runs in a continuous loop until all tasks complete or the Supervisor decides to stop:
+### 3️⃣ Execution Loop
 
 ```
 ┌────────────────────────────────────────────────────────────────┐
-│                     EXECUTION LOOP                             │
+│                    ⚡ EXECUTION LOOP                            │
 │                                                                │
+│  📋 Get next pending task                                      │
+│           │                                                    │
+│           ▼                                                    │
+│    ┌─────────────┐                                             │
+│    │ 💻 CODER    │──▶ Implementation                           │
+│    └─────────────┘         │                                   │
+│                            ▼                                   │
+│                     ┌─────────────┐                            │
+│                     │ 🧪 TESTER   │──▶ Test Results            │
+│                     └─────────────┘         │                  │
+│                            │                ▼                  │
+│                          Pass? ─────────── ✅ ──▶ Complete     │
+│                            │                                   │
+│                           ❌                                   │
+│                            ▼                                   │
+│                     ┌─────────────┐                            │
+│                     │ 🔧 FIX LOOP │ (max 3 cycles)             │
+│                     └─────────────┘                            │
+│                            │                                   │
+│                      Still failing                             │
+│                            │                                   │
+│                            ▼                                   │
+│               ┌───────────────────────┐                        │
+│               │    ❌ TASK FAILED     │                        │
+│               └───────────────────────┘                        │
+│                            │                                   │
+│                            ▼                                   │
 │  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Get next pending task                                    │   │
-│  │         │                                                │   │
-│  │         ▼                                                │   │
-│  │  ┌─────────────┐                                         │   │
-│  │  │ CODER       │──▶ Implementation                       │   │
-│  │  └─────────────┘         │                               │   │
-│  │         │                ▼                               │   │
-│  │         │         ┌─────────────┐                        │   │
-│  │         │         │ TESTER      │──▶ Test Results        │   │
-│  │         │         └─────────────┘         │              │   │
-│  │         │                │                ▼              │   │
-│  │         │               Pass?────────────Yes──▶ Complete │   │
-│  │         │                │                               │   │
-│  │         │               No                               │   │
-│  │         │                ▼                               │   │
-│  │         │         ┌─────────────┐                        │   │
-│  │         │         │ FIX LOOP    │ (max 3 cycles)         │   │
-│  │         │         └─────────────┘                        │   │
-│  │         │                │                               │   │
-│  │         │            Still failing                       │   │
-│  │         │                │                               │   │
-│  │         ▼                ▼                               │   │
-│  │  ┌───────────────────────────────┐                       │   │
-│  │  │        TASK FAILED            │                       │   │
-│  │  └───────────────────────────────┘                       │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                          │                                     │
-│                          ▼                                     │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │              SUPERVISOR DIAGNOSIS                        │   │
+│  │           👁️ SUPERVISOR DIAGNOSIS                        │   │
 │  │                                                          │   │
-│  │  Analyze failure pattern and decide:                     │   │
-│  │                                                          │   │
-│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌──────────┐ ┌────┐│   │
-│  │  │  RETRY  │ │ REPLAN  │ │  PIVOT  │ │IMPOSSIBLE│ │ASK ││   │
-│  │  └────┬────┘ └────┬────┘ └────┬────┘ └────┬─────┘ └──┬─┘│   │
-│  │       │           │           │           │          │   │   │
-│  │       ▼           ▼           ▼           ▼          ▼   │   │
-│  │    Reset to    Break into   Fresh      Stop with   Pause │   │
-│  │    pending     subtasks     plan       reason      for   │   │
-│  │                                                   input  │   │
+│  │  ┌───────┐ ┌────────┐ ┌───────┐ ┌──────────┐ ┌───────┐  │   │
+│  │  │🔄RETRY│ │📋REPLAN│ │🔀PIVOT│ │❌IMPOSSIBLE│ │❓ASK  │  │   │
+│  │  └───┬───┘ └───┬────┘ └───┬───┘ └─────┬────┘ └───┬───┘  │   │
+│  │      ▼         ▼          ▼           ▼          ▼      │   │
+│  │   Reset to   Break      Fresh       Stop       Pause    │   │
+│  │   pending    subtasks   plan        with       for      │   │
+│  │                                     reason     input    │   │
 │  └─────────────────────────────────────────────────────────┘   │
-│                          │                                     │
-│                          ▼                                     │
+│                            │                                   │
 │              Continue loop (unless stopped)                    │
 └────────────────────────────────────────────────────────────────┘
 ```
 
-### Phase 4: Final Verification
+### 4️⃣ Final Verification
 ```
-All Tasks ──▶ SUPERVISOR ──▶ Goal Achieved? ──┬──▶ Yes: SUCCESS
-                                              │
-                                              └──▶ No: FAILED
+📋 All Tasks ──▶ 👁️ SUPERVISOR ──▶ Goal Achieved? ──┬──▶ ✅ SUCCESS
+                                                    └──▶ ❌ FAILED
 ```
 
-## Supervisor Diagnosis Decisions
-
-When a task fails, the Supervisor analyzes the failure pattern and makes an intelligent decision:
+## 🔍 Supervisor Diagnosis Decisions
 
 | Decision | When Used | Action |
 |----------|-----------|--------|
-| **RETRY** | Transient error (network, timing, flaky test) | Reset task to pending, try again |
-| **REPLAN** | Task too complex or poorly defined | Break into smaller subtasks |
-| **PIVOT** | Fundamental approach is wrong | Create fresh plan with different strategy |
-| **IMPOSSIBLE** | Goal cannot be achieved | Stop with explanation |
-| **CLARIFY** | Requirements ambiguous | Pause for user input |
+| 🔄 **RETRY** | Transient error (network, timing) | Reset task, try again |
+| 📋 **REPLAN** | Task too complex | Break into subtasks |
+| 🔀 **PIVOT** | Approach is wrong | Fresh plan, new strategy |
+| ❌ **IMPOSSIBLE** | Goal cannot be achieved | Stop with explanation |
+| ❓ **CLARIFY** | Requirements ambiguous | Pause for user input |
 
-### Diagnosis Context
+### 📊 Diagnosis Context
 
 The Supervisor receives:
-- Original goal
-- Failed task description
-- Complete attempt history (what was tried, what failed)
-- Current state (completed/failed/pending counts)
-- Replan depth (how many times we've subdivided)
+- 🎯 Original goal
+- 📝 Failed task description
+- 📜 Complete attempt history
+- 📊 Current state (completed/failed/pending)
+- 🌳 Replan depth
 
-This context enables intelligent decisions rather than blind retries.
-
-## State Transitions
+## 🔀 State Transitions
 
 ### Task States
 ```
-PENDING ──▶ IN_PROGRESS ──┬──▶ COMPLETED
-                          │
-                          └──▶ FAILED ──▶ (diagnosis decides next state)
-                                   │
-                                   ├──▶ PENDING (retry)
-                                   ├──▶ BLOCKED (replan - replaced by subtasks)
-                                   └──▶ (pivot - new tasks created)
+⏳ PENDING ──▶ 🔄 IN_PROGRESS ──┬──▶ ✅ COMPLETED
+                                │
+                                └──▶ ❌ FAILED ──▶ (diagnosis decides)
+                                          │
+                                          ├──▶ ⏳ PENDING (retry)
+                                          ├──▶ 🚫 BLOCKED (replan)
+                                          └──▶ 🔀 (pivot - new tasks)
 ```
 
 ### Execution States
 ```
-NOT_STARTED ──▶ RUNNING ──┬──▶ COMPLETED (goal verified)
-                          │
-                          ├──▶ FAILED (goal impossible)
-                          │
-                          ├──▶ PAUSED (clarification needed)
-                          │
-                          └──▶ ABORTED (user abort)
+⏳ NOT_STARTED ──▶ 🔄 RUNNING ──┬──▶ ✅ COMPLETED
+                                ├──▶ ❌ FAILED
+                                ├──▶ ⏸️ PAUSED
+                                └──▶ 🛑 ABORTED
 ```
 
-## Configuration
+## ⚙️ Configuration
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `maxFixCycles` | 3 | Fix attempts within a single task execution |
-| `maxPlanRevisions` | 3 | Plan revision attempts during review |
-| `maxReplanDepth` | 3 | Maximum subtask nesting depth |
-| `timeLimit` | 7200000ms (2h) | Maximum execution time (0 = unlimited) |
-| `approval threshold` | 70 | Minimum score to approve |
+| `maxFixCycles` | 3 | Fix attempts per task |
+| `maxPlanRevisions` | 3 | Plan revision attempts |
+| `maxReplanDepth` | 3 | Max subtask nesting |
+| `timeLimit` | 2h | Max execution time |
+| `approval threshold` | 70 | Min score to approve |
 
-Note: These are safety rails, not termination triggers. The Supervisor can still decide to continue beyond these limits if appropriate.
-
-## Supervisor Thresholds
+## 📊 Supervisor Thresholds
 
 ### Verification Scoring
-- **70-100**: Approve - work proceeds
-- **50-69**: Revise - returns to agent with feedback
-- **Below 50**: Reject - triggers diagnosis
+| Score | Action |
+|-------|--------|
+| 70-100 | ✅ Approve |
+| 50-69 | 🔄 Revise |
+| <50 | ❌ Reject → diagnosis |
 
 ### Escalation Levels
 | Level | Description |
 |-------|-------------|
-| `none` | No issues |
-| `remind` | Minor issue, gentle reminder |
-| `correct` | Clear mistake needs fixing |
-| `refocus` | Agent going off track |
-| `critical` | Serious problem |
-| `abort` | Unrecoverable issue |
+| ✅ `none` | No issues |
+| 💬 `remind` | Gentle reminder |
+| 🔧 `correct` | Needs fixing |
+| 🎯 `refocus` | Going off track |
+| ⚠️ `critical` | Serious problem |
+| 🛑 `abort` | Unrecoverable |
 
-## Key Differences from Traditional Approaches
+## 💾 Resumability
 
-| Traditional | Claude Looper |
-|-------------|---------------|
-| Fixed retry limits | Intelligent diagnosis |
-| Silent failures | Explicit decisions with reasoning |
-| Hard-coded escalation | Context-aware escalation |
-| Terminate on limit | Pivot to new approach |
-| No learning | Attempt history informs decisions |
+State snapshots after each task enable resume from:
+- ❌ Failed executions
+- ⏸️ Paused executions (waiting for input)
+- 🔌 Interrupted sessions
 
-## Resumability
-
-The orchestrator snapshots state after each task, allowing resume from:
-- Failed executions
-- Paused executions (waiting for clarification)
-- Interrupted sessions
-
-Resume behavior:
-1. Loads saved state
-2. Restores attempt history
-3. Continues from where it left off
-4. Preserves Claude conversation context
-
-## Example Flow
+## 📖 Example Flow
 
 ```
-Goal: "Add user authentication"
+🎯 Goal: "Add user authentication"
 
-1. PLANNER creates tasks: [Setup DB, Create User model, Add login endpoint, Add tests]
+1️⃣ 📝 PLANNER creates tasks:
+   [Setup DB, Create User model, Add login endpoint, Add tests]
 
-2. CODER implements "Setup DB" ──▶ TESTER passes ──▶ Complete
+2️⃣ 💻 CODER "Setup DB" ──▶ 🧪 TESTER passes ──▶ ✅
 
-3. CODER implements "Create User model" ──▶ TESTER fails (missing field)
-   ├── FIX LOOP: CODER fixes ──▶ TESTER passes ──▶ Complete
+3️⃣ 💻 CODER "Create User model" ──▶ 🧪 TESTER fails
+   └── 🔧 FIX: CODER fixes ──▶ 🧪 passes ──▶ ✅
 
-4. CODER implements "Add login endpoint" ──▶ TESTER fails (3x)
-   ├── SUPERVISOR DIAGNOSES: "REPLAN - endpoint too complex"
-   ├── PLANNER creates subtasks: [Add route, Add validation, Add session]
-   ├── Each subtask executes successfully
+4️⃣ 💻 CODER "Add login endpoint" ──▶ 🧪 TESTER fails (3x)
+   └── 👁️ SUPERVISOR: "📋 REPLAN - too complex"
+   └── 📝 PLANNER creates subtasks: [Add route, Add validation, Add session]
+   └── Each subtask ──▶ ✅
 
-5. CODER implements "Add tests" ──▶ TESTER passes ──▶ Complete
+5️⃣ 💻 CODER "Add tests" ──▶ 🧪 TESTER passes ──▶ ✅
 
-6. SUPERVISOR verifies goal ──▶ APPROVED ──▶ SUCCESS
+6️⃣ 👁️ SUPERVISOR verifies goal ──▶ ✅ SUCCESS
 ```
-
-If at any point the Supervisor determines the goal is impossible (e.g., "requires external API we don't have access to"), it returns `IMPOSSIBLE` with blockers, and execution stops with a clear explanation rather than silently failing.
