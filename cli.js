@@ -40,10 +40,13 @@ async function runInDocker(args) {
   const reset = '\x1b[0m';
 
   // Build docker run command
+  // Only allocate TTY if parent has one, otherwise UI won't work
+  const hasTTY = process.stdin.isTTY && process.stdout.isTTY;
   const dockerArgs = [
     'run',
     //'--rm',
-    '-it',
+    // -i keeps stdin open, -t allocates pseudo-TTY (only if parent has TTY)
+    ...(hasTTY ? ['-it'] : ['-i']),
     // Use host network for better connectivity
     '--network=host',
     // Resource limits to prevent host machine exhaustion
@@ -65,13 +68,21 @@ async function runInDocker(args) {
   // Mount /tmp for temporary files
   dockerArgs.push('-v', '/tmp:/tmp');
 
+  // Pass TERM environment variable for proper terminal handling
+  if (process.env.TERM) {
+    dockerArgs.push('-e', `TERM=${process.env.TERM}`);
+  }
+
   // Add the image name
   dockerArgs.push('claude');
 
   // Run claude-looper with the passed arguments
-  dockerArgs.push('claude-looper', ...args);
+  // If no TTY, ensure --no-ui is passed to prevent UI initialization failures
+  const containerArgs = hasTTY ? args : (args.includes('--no-ui') ? args : ['--no-ui', ...args]);
+  dockerArgs.push('claude-looper', ...containerArgs);
 
   console.log(`${cyan}→ Running in docker container...${reset}`);
+  console.log(`${gray}  TTY mode: ${hasTTY ? 'enabled (UI available)' : 'disabled (text mode)'}${reset}`);
   console.log(`${gray}  Mounting: ${cwd} -> /home/claude/workspace${reset}`);
   console.log(`${gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${reset}`);
   if (fs.existsSync(sshDir)) {
@@ -108,7 +119,9 @@ async function startMain() {
   const { TerminalUI } = await import('./terminal-ui.js');
 
   const args = process.argv.slice(2);
-  const useUI = !args.includes('--no-ui');
+  // UI requires a TTY - check both stdin and stdout
+  const hasTTY = process.stdin.isTTY && process.stdout.isTTY;
+  const useUI = !args.includes('--no-ui') && hasTTY;
 
   /**
    * Set up UI event handlers for both execute and resume flows
@@ -271,24 +284,35 @@ async function startMain() {
 
     // Initialize UI if enabled
     if (useUI) {
-      ui = new TerminalUI();
-      await ui.init();
-      cleanupUI = setupUIEventHandlers(ui, orchestrator);
+      try {
+        ui = new TerminalUI();
+        await ui.init();
+        cleanupUI = setupUIEventHandlers(ui, orchestrator);
 
-      // Show initial tasks from saved state
-      const state = agentCore.loadSnapshot();
-      if (state?.agents?.planner?.tasks) {
-        // Find current and next tasks from saved state
-        const tasks = state.agents.planner.tasks;
-        const currentTask = tasks.find(t => t.status === 'in_progress');
-        const pendingTasks = tasks.filter(t => t.status === 'pending');
-        const nextTask = pendingTasks[0]; // First pending task
-        ui.updateTasks(tasks, {
-          currentTaskId: currentTask?.id,
-          nextTaskId: nextTask?.id
-        });
+        // Show initial tasks from saved state
+        const state = agentCore.loadSnapshot();
+        if (state?.agents?.planner?.tasks) {
+          // Find current and next tasks from saved state
+          const tasks = state.agents.planner.tasks;
+          const currentTask = tasks.find(t => t.status === 'in_progress');
+          const pendingTasks = tasks.filter(t => t.status === 'pending');
+          const nextTask = pendingTasks[0]; // First pending task
+          ui.updateTasks(tasks, {
+            currentTaskId: currentTask?.id,
+            nextTaskId: nextTask?.id
+          });
+        }
+        ui.setPhase('execution');
+      } catch (uiError) {
+        // Fall back to non-UI mode if terminal UI fails to initialize
+        console.log(`Note: Terminal UI unavailable (${uiError.message}), using text mode.`);
+        ui = null;
+        console.log('Resuming workflow...');
+        console.log(`  Goal: ${resumeInfo.goal}`);
+        console.log(`  Previous status: ${resumeInfo.status}`);
+        console.log(`  Tasks: ${resumeInfo.tasks.completed}/${resumeInfo.tasks.total} completed, ${resumeInfo.tasks.failed} failed`);
+        console.log('---');
       }
-      ui.setPhase('execution');
     }
 
     try {
@@ -333,9 +357,17 @@ async function startMain() {
 
   // Initialize UI if enabled
   if (useUI) {
-    ui = new TerminalUI();
-    await ui.init();
-    cleanupUI = setupUIEventHandlers(ui, orchestrator);
+    try {
+      ui = new TerminalUI();
+      await ui.init();
+      cleanupUI = setupUIEventHandlers(ui, orchestrator);
+    } catch (uiError) {
+      // Fall back to non-UI mode if terminal UI fails to initialize
+      console.log(`Note: Terminal UI unavailable (${uiError.message}), using text mode.`);
+      ui = null;
+      console.log(`Starting workflow for goal: ${goal}`);
+      console.log('---');
+    }
   } else {
     console.log(`Starting workflow for goal: ${goal}`);
     console.log('---');
