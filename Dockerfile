@@ -31,22 +31,22 @@ RUN apt-get update && apt-get install -y \
 RUN add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
     && apt-get install -y \
-    python3.12 \
-    python3.12-venv \
-    python3.12-dev \
+    python3.13 \
+    python3.13-venv \
+    python3.13-dev \
     python3-pip \
-    && update-alternatives --install /usr/bin/python python /usr/bin/python3.12 1 \
-    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.12 1 \
+    && update-alternatives --install /usr/bin/python python /usr/bin/python3.13 1 \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.13 1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Go latest (1.22.x)
-ENV GO_VERSION=1.22.4
+# Install Go latest (1.24.x)
+ENV GO_VERSION=1.24.10
 RUN wget -q https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz \
     && tar -C /usr/local -xzf go${GO_VERSION}.linux-amd64.tar.gz \
     && rm go${GO_VERSION}.linux-amd64.tar.gz
 
-# Install Node.js 20.x LTS
-RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+# Install Node.js 22.x LTS
+RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
