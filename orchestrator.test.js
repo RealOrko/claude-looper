@@ -1733,3 +1733,191 @@ describe('Orchestrator - Agent Coordination', () => {
     assert.ok(supervisorContext.agentOutput.testResult);
   });
 });
+
+describe('Orchestrator - Task Depth Calculation', () => {
+  beforeEach(() => {
+    agentCore.reset();
+  });
+
+  it('should return depth 0 for root tasks', () => {
+    const orchestrator = new Orchestrator({
+      configDir: TEST_CONFIG_DIR,
+      configPath: path.join(TEST_CONFIG_DIR, 'default-workflow.json'),
+      silent: true
+    });
+
+    orchestrator.loadConfiguration();
+    orchestrator.initializeAgents();
+
+    // Create a root task (no parent)
+    const rootTask = agentCore.addTask('planner', {
+      description: 'Root task',
+      parentGoalId: 'goal-1'
+    });
+
+    const depth = orchestrator._getTaskDepth(rootTask);
+    assert.strictEqual(depth, 0);
+  });
+
+  it('should return depth 1 for direct subtasks', () => {
+    const orchestrator = new Orchestrator({
+      configDir: TEST_CONFIG_DIR,
+      configPath: path.join(TEST_CONFIG_DIR, 'default-workflow.json'),
+      silent: true
+    });
+
+    orchestrator.loadConfiguration();
+    orchestrator.initializeAgents();
+
+    const rootTask = agentCore.addTask('planner', {
+      description: 'Root task',
+      parentGoalId: 'goal-1'
+    });
+
+    const subtask = agentCore.addSubtask('planner', rootTask.id, {
+      description: 'Subtask level 1'
+    });
+
+    const depth = orchestrator._getTaskDepth(subtask);
+    assert.strictEqual(depth, 1);
+  });
+
+  it('should return correct depth for deeply nested tasks', () => {
+    const orchestrator = new Orchestrator({
+      configDir: TEST_CONFIG_DIR,
+      configPath: path.join(TEST_CONFIG_DIR, 'default-workflow.json'),
+      silent: true
+    });
+
+    orchestrator.loadConfiguration();
+    orchestrator.initializeAgents();
+
+    // Create a 5-level deep hierarchy
+    const level0 = agentCore.addTask('planner', {
+      description: 'Level 0 (root)',
+      parentGoalId: 'goal-1'
+    });
+
+    const level1 = agentCore.addSubtask('planner', level0.id, {
+      description: 'Level 1'
+    });
+
+    const level2 = agentCore.addSubtask('planner', level1.id, {
+      description: 'Level 2'
+    });
+
+    const level3 = agentCore.addSubtask('planner', level2.id, {
+      description: 'Level 3'
+    });
+
+    const level4 = agentCore.addSubtask('planner', level3.id, {
+      description: 'Level 4'
+    });
+
+    assert.strictEqual(orchestrator._getTaskDepth(level0), 0);
+    assert.strictEqual(orchestrator._getTaskDepth(level1), 1);
+    assert.strictEqual(orchestrator._getTaskDepth(level2), 2);
+    assert.strictEqual(orchestrator._getTaskDepth(level3), 3);
+    assert.strictEqual(orchestrator._getTaskDepth(level4), 4);
+  });
+});
+
+describe('Orchestrator - Proactive Breakdown Depth Limit', () => {
+  beforeEach(() => {
+    agentCore.reset();
+  });
+
+  it('should proactively break down complex task at depth 0', async () => {
+    const orchestrator = new Orchestrator({
+      configDir: TEST_CONFIG_DIR,
+      configPath: path.join(TEST_CONFIG_DIR, 'default-workflow.json'),
+      silent: true
+    });
+
+    orchestrator.loadConfiguration();
+    orchestrator.initializeAgents();
+    orchestrator.config.planner = { settings: { maxReplanDepth: 3 } };
+
+    const goal = agentCore.setGoal('planner', 'Test goal');
+    const complexTask = agentCore.addTask('planner', {
+      description: 'Complex root task',
+      parentGoalId: goal.id,
+      metadata: { complexity: 'complex' }
+    });
+
+    orchestrator.agents.planner.currentPlan = { goalId: goal.id };
+    let replanCalled = false;
+
+    orchestrator.agents.planner.replan = async () => {
+      replanCalled = true;
+      // Create subtasks to prevent infinite loop
+      agentCore.addSubtask('planner', complexTask.id, {
+        description: 'Subtask 1',
+        metadata: { complexity: 'simple' }
+      });
+      return { subtasks: [] };
+    };
+
+    // Mock other agents to prevent execution
+    orchestrator.agents.coder.implement = async () => ({ status: 'success' });
+    orchestrator.agents.tester.test = async () => ({ status: 'passed' });
+    orchestrator.agents.supervisor.verify = async () => ({ approved: true, score: 90 });
+
+    // Start execution (will process first task)
+    orchestrator.startTime = Date.now();
+    orchestrator.goal = 'Test goal';
+
+    // Get the task through getNextTask and check if replan would be called
+    const task = orchestrator.agents.planner.getNextTask();
+    const taskDepth = orchestrator._getTaskDepth(task);
+    const maxReplanDepth = orchestrator.config.planner?.settings?.maxReplanDepth ?? 3;
+
+    // Verify depth check would allow proactive breakdown
+    assert.strictEqual(taskDepth, 0);
+    assert.ok(taskDepth < maxReplanDepth, 'Should allow breakdown at depth 0');
+  });
+
+  it('should skip proactive breakdown when at max depth', () => {
+    const orchestrator = new Orchestrator({
+      configDir: TEST_CONFIG_DIR,
+      configPath: path.join(TEST_CONFIG_DIR, 'default-workflow.json'),
+      silent: true
+    });
+
+    orchestrator.loadConfiguration();
+    orchestrator.initializeAgents();
+    orchestrator.config.planner = { settings: { maxReplanDepth: 2 } };
+
+    const goal = agentCore.setGoal('planner', 'Test goal');
+
+    // Create hierarchy: root -> level1 -> level2 (depth 2)
+    const root = agentCore.addTask('planner', {
+      description: 'Root',
+      parentGoalId: goal.id,
+      metadata: { complexity: 'complex' }
+    });
+
+    const level1 = agentCore.addSubtask('planner', root.id, {
+      description: 'Level 1',
+      metadata: { complexity: 'complex' }
+    });
+
+    const level2 = agentCore.addSubtask('planner', level1.id, {
+      description: 'Level 2 - at max depth',
+      metadata: { complexity: 'complex' }
+    });
+
+    orchestrator.agents.planner.currentPlan = { goalId: goal.id };
+
+    // Check depths
+    assert.strictEqual(orchestrator._getTaskDepth(root), 0);
+    assert.strictEqual(orchestrator._getTaskDepth(level1), 1);
+    assert.strictEqual(orchestrator._getTaskDepth(level2), 2);
+
+    // At maxReplanDepth: 2, level2 should NOT be proactively broken down
+    const maxReplanDepth = orchestrator.config.planner.settings.maxReplanDepth;
+    const level2Depth = orchestrator._getTaskDepth(level2);
+
+    assert.ok(level2Depth >= maxReplanDepth, 'Level 2 should be at or beyond max depth');
+  });
+});

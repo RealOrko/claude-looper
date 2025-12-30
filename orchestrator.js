@@ -550,11 +550,21 @@ export class Orchestrator {
       }
 
       // Proactively break down complex and medium tasks before executing
-      if (['complex', 'medium'].includes(task.metadata?.complexity) && (!task.subtasks || task.subtasks.length === 0)) {
-        this._log(`[Orchestrator] ${task.metadata.complexity} task detected, breaking into subtasks: ${task.description}`);
+      // Respect maxReplanDepth to prevent unlimited nesting
+      const maxReplanDepth = this.config.planner?.settings?.maxReplanDepth ?? 3;
+      const taskDepth = this._getTaskDepth(task);
+
+      if (['complex', 'medium'].includes(task.metadata?.complexity) &&
+          (!task.subtasks || task.subtasks.length === 0) &&
+          taskDepth < maxReplanDepth) {
+        this._log(`[Orchestrator] ${task.metadata.complexity} task at depth ${taskDepth} detected, breaking into subtasks: ${task.description}`);
         await this.agents.planner.replan(task, `Proactive breakdown of ${task.metadata.complexity} task`);
         // Continue loop to pick up the new subtasks
         continue;
+      } else if (['complex', 'medium'].includes(task.metadata?.complexity) &&
+                 (!task.subtasks || task.subtasks.length === 0) &&
+                 taskDepth >= maxReplanDepth) {
+        this._log(`[Orchestrator] Skipping proactive breakdown: depth ${taskDepth} >= max ${maxReplanDepth}. Executing ${task.metadata.complexity} task directly.`);
       }
 
       this._log(`[Orchestrator] Executing task: ${task.description}`);
@@ -900,6 +910,22 @@ export class Orchestrator {
       maxDepth = Math.max(maxDepth, depth);
     }
     return maxDepth;
+  }
+
+  /**
+   * Calculate the depth of a single task in the hierarchy
+   * @param {object} task - The task to calculate depth for
+   * @returns {number} Depth (0 for root tasks, 1 for subtasks, etc.)
+   */
+  _getTaskDepth(task) {
+    const tasks = this.agents.planner.agent.tasks;
+    let depth = 0;
+    let current = task;
+    while (current.parentTaskId) {
+      depth++;
+      current = tasks.find(t => t.id === current.parentTaskId) || { parentTaskId: null };
+    }
+    return depth;
   }
 
   /**

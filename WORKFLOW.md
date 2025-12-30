@@ -149,7 +149,7 @@ Task Fails
     │
     ▼
 ┌─────────────────────────────────────────────────────────┐
-│  replanDepth < maxReplanDepth (3)?                      │
+│  replanDepth < maxReplanDepth (5)?                      │
 │     YES → Allow REPLAN                                  │
 │     NO  → Escalate to PIVOT                            │
 └─────────────────────────────────────────────────────────┘
@@ -224,7 +224,7 @@ The Supervisor receives:
 | `maxStepAttempts` | 3 | Retry attempts per task before escalating to REPLAN |
 | `maxFixCycles` | 3 | Fix attempts per task within coder/tester loop |
 | `maxPlanRevisions` | 3 | Plan revision attempts |
-| `maxReplanDepth` | 3 | Max subtask nesting before escalating to PIVOT |
+| `maxReplanDepth` | 5 | Max subtask nesting before escalating to PIVOT |
 | `maxPivots` | 3 | Fresh plan attempts before marking IMPOSSIBLE |
 | `timeLimit` | 2h | Max execution time |
 | `approval threshold` | 70 | Min score to approve |

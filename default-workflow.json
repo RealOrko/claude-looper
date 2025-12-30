@@ -70,7 +70,7 @@
         "settings": {
           "minTasks": 2,
           "maxTasks": 15,
-          "maxReplanDepth": 3,
+          "maxReplanDepth": 5,
           "attemptsBeforeReplan": 3
         }
       },
