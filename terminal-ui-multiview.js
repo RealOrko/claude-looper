@@ -177,7 +177,6 @@ export class TerminalUIMultiView {
       left: 0,
       width: '50%',
       bottom: 1,
-      label: ' Tasks ',
       tags: true,
       keys: true,
       vi: true,
@@ -191,8 +190,7 @@ export class TerminalUIMultiView {
       },
       style: {
         fg: 'white',
-        border: { fg: 'cyan' },
-        label: { fg: 'cyan', bold: true }
+        border: { fg: 'cyan' }
       },
       border: { type: 'line' },
       content: '{gray-fg}Loading...{/gray-fg}'
@@ -205,7 +203,6 @@ export class TerminalUIMultiView {
       left: '50%',
       right: 0,
       bottom: 1,
-      label: ' Details ',
       tags: true,
       keys: true,
       vi: true,
@@ -219,8 +216,7 @@ export class TerminalUIMultiView {
       },
       style: {
         fg: 'white',
-        border: { fg: 'gray' },
-        label: { fg: 'gray', bold: true }
+        border: { fg: 'gray' }
       },
       border: { type: 'line' },
       content: '{gray-fg}Select an item{/gray-fg}'
@@ -444,11 +440,6 @@ export class TerminalUIMultiView {
 
     // Switch view
     this.currentView = viewType;
-    const config = VIEW_CONFIG[viewType];
-
-    // Update panel labels
-    this.widgets.leftPanel.setLabel(` ${config.label} `);
-    this.widgets.rightPanel.setLabel(' Details ');
 
     // Reset scroll positions for new view
     this.widgets.leftPanel.childBase = 0;
@@ -589,18 +580,14 @@ export class TerminalUIMultiView {
 
     if (this.focusedPanel === 'left') {
       leftPanel.style.border.fg = 'cyan';
-      leftPanel.style.label.fg = 'cyan';
       leftPanel.style.scrollbar = { bg: 'cyan' };
       rightPanel.style.border.fg = 'gray';
-      rightPanel.style.label.fg = 'gray';
       rightPanel.style.scrollbar = { bg: 'gray' };
       leftPanel.focus();
     } else {
       leftPanel.style.border.fg = 'gray';
-      leftPanel.style.label.fg = 'gray';
       leftPanel.style.scrollbar = { bg: 'gray' };
       rightPanel.style.border.fg = 'cyan';
-      rightPanel.style.label.fg = 'cyan';
       rightPanel.style.scrollbar = { bg: 'cyan' };
       rightPanel.focus();
     }
