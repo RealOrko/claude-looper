@@ -102,8 +102,8 @@ ENV NODE_PATH=/opt/claude-looper-deps/node_modules
 # Create mount point for source code
 RUN mkdir -p /opt/claude-looper
 
-# Create wrapper script that runs from mounted source
-RUN echo '#!/bin/bash\ncd /opt/claude-looper && exec node cli.js "$@"' > /usr/local/bin/claude-looper \
+# Create wrapper script that preserves working directory
+RUN echo '#!/bin/bash\nexec node /opt/claude-looper/cli.js "$@"' > /usr/local/bin/claude-looper \
     && chmod +x /usr/local/bin/claude-looper
 
 # Create claude user with sudo access (UID 1000 to match typical host user)
