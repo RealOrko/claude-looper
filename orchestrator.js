@@ -91,11 +91,34 @@ export class Orchestrator {
   }
 
   /**
+   * Check if we're running in the source tree directory
+   * (where the package source code lives)
+   */
+  _isSourceTreeDirectory() {
+    const packageDir = __dirname;
+    const cwd = process.cwd();
+
+    // Check if cwd is the package directory or a parent/child of it
+    // by looking for source markers in cwd
+    const sourceMarkers = ['orchestrator.js', 'cli.js', 'agent-executor.js'];
+    const hasSourceMarkers = sourceMarkers.every(marker =>
+      fs.existsSync(path.join(cwd, marker))
+    );
+
+    // Also check if there's a templates/ directory at cwd root (source templates)
+    const hasSourceTemplates = fs.existsSync(path.join(cwd, 'templates'));
+
+    return hasSourceMarkers && hasSourceTemplates;
+  }
+
+  /**
    * Initialize config directory with defaults from package
    * Copies workflow config and templates if they don't exist
+   * When running in source tree directory, always overwrites templates from source
    */
   initializeConfigDir() {
     const packageDir = __dirname;
+    const isSourceTree = this._isSourceTreeDirectory();
 
     // Create config directory if it doesn't exist
     if (!fs.existsSync(this.configDir)) {
@@ -113,14 +136,21 @@ export class Orchestrator {
       this._log(`Created default workflow: ${this.configPath}`);
     }
 
-    // Copy templates directory if it doesn't exist
-    if (!fs.existsSync(this.templatesDir)) {
-      const packageTemplatesDir = path.join(packageDir, 'templates');
+    // Copy templates directory
+    // Always overwrite when in source tree directory to ensure templates stay in sync
+    const packageTemplatesDir = path.join(packageDir, 'templates');
+    const shouldCopyTemplates = !fs.existsSync(this.templatesDir) || isSourceTree;
+
+    if (shouldCopyTemplates) {
       if (!fs.existsSync(packageTemplatesDir)) {
         throw new Error(`Templates not found in package: ${packageTemplatesDir}`);
       }
       this._copyDirRecursive(packageTemplatesDir, this.templatesDir);
-      this._log(`Created templates directory: ${this.templatesDir}`);
+      if (isSourceTree) {
+        this._log(`Synced templates from source: ${this.templatesDir}`);
+      } else {
+        this._log(`Created templates directory: ${this.templatesDir}`);
+      }
     }
   }
 
