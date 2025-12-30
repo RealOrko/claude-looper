@@ -27,11 +27,16 @@ async function runInDocker(args) {
   const { homedir } = await import('os');
   const path = await import('path');
   const fs = await import('fs');
+  const { fileURLToPath } = await import('url');
 
   const cwd = process.cwd();
   const home = homedir();
   const claudeConfigDir = path.join(home, '.claude');
   const sshDir = path.join(home, '.ssh');
+
+  // Get the claude-looper source directory for volume mounting
+  const __filename = fileURLToPath(import.meta.url);
+  const sourceDir = path.dirname(__filename);
 
   // ANSI color codes
   const cyan = '\x1b[36m';
@@ -56,6 +61,8 @@ async function runInDocker(args) {
     // Resource limits to prevent host machine exhaustion
     '--memory=4g',
     '--cpus=2',
+    // Mount claude-looper source code (enables dev without rebuilding image)
+    '-v', `${sourceDir}:/opt/claude-looper`,
     // Mount current directory as workspace
     '-v', `${cwd}:/home/claude/workspace`,
     // Mount ~/.claude for credentials (read-write since Claude Code writes debug logs)
@@ -84,6 +91,7 @@ async function runInDocker(args) {
   dockerArgs.push('claude-looper', ...args);
 
   console.log(`${cyan}→ Running in docker container...${reset}`);
+  console.log(`${gray}  Mounting: ${sourceDir} -> /opt/claude-looper (source)${reset}`);
   console.log(`${gray}  Mounting: ${cwd} -> /home/claude/workspace${reset}`);
   console.log(`${gray}  Mounting: ${claudeConfigDir} -> /home/claude/.claude${reset}`);
   if (fs.existsSync(sshDir)) {
