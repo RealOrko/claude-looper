@@ -395,7 +395,7 @@ export class PlannerAgent {
     return {
       task: agentCore.updateTask(this.name, taskId, {
         status: TASK_STATUS.FAILED,
-        metadata: { failureReason: reason }
+        metadata: { ...task.metadata, failureReason: reason }
       }),
       needsReplan: false
     };
