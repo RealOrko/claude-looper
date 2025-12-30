@@ -354,6 +354,102 @@ describe('PlannerAgent - Task Status Methods', () => {
     assert.strictEqual(result.status, TASK_STATUS.COMPLETED);
   });
 
+  it('should preserve existing metadata when marking complete', () => {
+    const task = agentCore.addTask('planner', {
+      description: 'Test task',
+      status: TASK_STATUS.IN_PROGRESS,
+      metadata: { complexity: 'medium', verificationCriteria: ['test'] }
+    });
+
+    const result = planner.markTaskComplete(task.id, { completedAt: 12345 });
+
+    assert.strictEqual(result.status, TASK_STATUS.COMPLETED);
+    assert.strictEqual(result.metadata.complexity, 'medium');
+    assert.deepStrictEqual(result.metadata.verificationCriteria, ['test']);
+    assert.strictEqual(result.metadata.completedAt, 12345);
+  });
+
+  it('should complete blocked parent when all subtasks complete', () => {
+    // Create a parent task that is blocked with subtasks
+    const parentTask = agentCore.addTask('planner', {
+      description: 'Parent task'
+    });
+    agentCore.updateTask('planner', parentTask.id, { status: TASK_STATUS.BLOCKED });
+
+    // Create subtasks and set their statuses
+    const subtask1 = agentCore.addSubtask('planner', parentTask.id, {
+      description: 'Subtask 1'
+    });
+    agentCore.updateTask('planner', subtask1.id, { status: TASK_STATUS.COMPLETED });
+
+    const subtask2 = agentCore.addSubtask('planner', parentTask.id, {
+      description: 'Subtask 2'
+    });
+    agentCore.updateTask('planner', subtask2.id, { status: TASK_STATUS.IN_PROGRESS });
+
+    // Complete the second subtask - this should trigger parent completion
+    planner.markTaskComplete(subtask2.id, {});
+
+    // Verify parent is now completed
+    const agent = agentCore.getAgent('planner');
+    const updatedParent = agent.tasks.find(t => t.id === parentTask.id);
+    assert.strictEqual(updatedParent.status, TASK_STATUS.COMPLETED);
+    assert.strictEqual(updatedParent.metadata.completedViaSubtasks, true);
+  });
+
+  it('should not complete parent if some subtasks are still pending', () => {
+    const parentTask = agentCore.addTask('planner', {
+      description: 'Parent task'
+    });
+    agentCore.updateTask('planner', parentTask.id, { status: TASK_STATUS.BLOCKED });
+
+    const subtask1 = agentCore.addSubtask('planner', parentTask.id, {
+      description: 'Subtask 1'
+    });
+    agentCore.updateTask('planner', subtask1.id, { status: TASK_STATUS.IN_PROGRESS });
+
+    const subtask2 = agentCore.addSubtask('planner', parentTask.id, {
+      description: 'Subtask 2'
+    });
+    // subtask2 remains pending (default)
+
+    // Complete the first subtask
+    planner.markTaskComplete(subtask1.id, {});
+
+    // Verify parent is still blocked
+    const agent = agentCore.getAgent('planner');
+    const updatedParent = agent.tasks.find(t => t.id === parentTask.id);
+    assert.strictEqual(updatedParent.status, TASK_STATUS.BLOCKED);
+  });
+
+  it('should recursively complete grandparent when parent completes via subtasks', () => {
+    // Create grandparent -> parent -> subtasks hierarchy
+    const grandparent = agentCore.addTask('planner', {
+      description: 'Grandparent task'
+    });
+    agentCore.updateTask('planner', grandparent.id, { status: TASK_STATUS.BLOCKED });
+
+    const parent = agentCore.addSubtask('planner', grandparent.id, {
+      description: 'Parent task'
+    });
+    agentCore.updateTask('planner', parent.id, { status: TASK_STATUS.BLOCKED });
+
+    const subtask = agentCore.addSubtask('planner', parent.id, {
+      description: 'Subtask'
+    });
+    agentCore.updateTask('planner', subtask.id, { status: TASK_STATUS.IN_PROGRESS });
+
+    // Complete the subtask - should cascade up
+    planner.markTaskComplete(subtask.id, {});
+
+    const agent = agentCore.getAgent('planner');
+    const updatedParent = agent.tasks.find(t => t.id === parent.id);
+    const updatedGrandparent = agent.tasks.find(t => t.id === grandparent.id);
+
+    assert.strictEqual(updatedParent.status, TASK_STATUS.COMPLETED);
+    assert.strictEqual(updatedGrandparent.status, TASK_STATUS.COMPLETED);
+  });
+
   it('should mark task as failed without replan needed', () => {
     const task = agentCore.addTask('planner', {
       description: 'Test task',

@@ -389,13 +389,53 @@ export class PlannerAgent {
    * @param {object} result - Completion result
    */
   markTaskComplete(taskId, result = {}) {
+    const existingTask = this.agent.tasks.find(t => t.id === taskId);
     const task = agentCore.updateTask(this.name, taskId, {
       status: TASK_STATUS.COMPLETED,
-      metadata: { ...result }
+      metadata: { ...existingTask?.metadata, ...result }
     });
 
     this._updateSuccessRate();
+
+    // Check if parent task should be completed (all subtasks done)
+    if (task?.parentTaskId) {
+      this._checkAndCompleteParent(task.parentTaskId);
+    }
+
     return task;
+  }
+
+  /**
+   * Check if a parent task should be completed when all its subtasks are done
+   * @param {string} parentTaskId - Parent task ID
+   */
+  _checkAndCompleteParent(parentTaskId) {
+    const parentTask = this.agent.tasks.find(t => t.id === parentTaskId);
+    if (!parentTask || !parentTask.subtasks || parentTask.subtasks.length === 0) {
+      return;
+    }
+
+    // Check if all subtasks are completed
+    const allSubtasksComplete = parentTask.subtasks.every(subId => {
+      const subtask = this.agent.tasks.find(t => t.id === subId);
+      return subtask && subtask.status === TASK_STATUS.COMPLETED;
+    });
+
+    if (allSubtasksComplete && parentTask.status === TASK_STATUS.BLOCKED) {
+      agentCore.updateTask(this.name, parentTaskId, {
+        status: TASK_STATUS.COMPLETED,
+        metadata: {
+          ...parentTask.metadata,
+          completedAt: Date.now(),
+          completedViaSubtasks: true
+        }
+      });
+
+      // Recursively check if this parent also has a parent
+      if (parentTask.parentTaskId) {
+        this._checkAndCompleteParent(parentTask.parentTaskId);
+      }
+    }
   }
 
   /**

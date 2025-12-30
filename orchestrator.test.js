@@ -230,7 +230,9 @@ describe('Orchestrator - Workflow Loading and Validation', () => {
     // Validate execution config
     assert.ok(Array.isArray(config.execution.phases));
     assert.ok(typeof config.execution.maxStepAttempts === 'number');
-    assert.ok(typeof config.execution.timeLimit === 'number');
+    // timeLimits is an object with baseMinutes, perComplexityPointMinutes, maxMinutes
+    assert.ok(typeof config.execution.timeLimits === 'object');
+    assert.ok(typeof config.execution.timeLimits.baseMinutes === 'number');
   });
 
   it('should store config internally after loading', () => {
@@ -528,7 +530,9 @@ describe('Orchestrator - Time Management', () => {
     });
 
     orchestrator.loadConfiguration();
-    orchestrator.startTime = Date.now() - 7200001; // Just over 2 hours (default limit)
+    // Set an explicit timeLimit for this test (timeLimit is optional, timeLimits object is used for dynamic calculation)
+    orchestrator.config.execution.timeLimit = 7200000; // 2 hours in ms
+    orchestrator.startTime = Date.now() - 7200001; // Just over 2 hours
 
     const exceeded = orchestrator._isTimeBudgetExceeded();
 
