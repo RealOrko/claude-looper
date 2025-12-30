@@ -230,9 +230,6 @@ describe('Orchestrator - Workflow Loading and Validation', () => {
     // Validate execution config
     assert.ok(Array.isArray(config.execution.phases));
     assert.ok(typeof config.execution.maxStepAttempts === 'number');
-    // timeLimits is an object with baseMinutes, perComplexityPointMinutes, maxMinutes
-    assert.ok(typeof config.execution.timeLimits === 'object');
-    assert.ok(typeof config.execution.timeLimits.baseMinutes === 'number');
   });
 
   it('should store config internally after loading', () => {

@@ -162,7 +162,7 @@ export class CoderAgent {
         model: this.model,
         fallbackModel: this.fallbackModel,
         jsonSchema,
-        timeout: 15 * 60 * 1000, // 15 minutes for complex implementations
+        timeout: 60 * 60 * 1000, // 1 hour for task implementations
         taskId: task.id,
         goalId: task.parentGoalId || null
       }

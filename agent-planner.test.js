@@ -6,7 +6,6 @@
  * - Plan creation and parsing
  * - Task management (mark complete/failed)
  * - Re-planning logic
- * - Complexity calculation
  * - Plan status tracking
  * - State management
  */
@@ -14,7 +13,7 @@
 import { describe, it, beforeEach, afterEach, mock } from 'node:test';
 import assert from 'node:assert';
 import agentCore from './agent-core.js';
-import { PlannerAgent, TASK_STATUS, COMPLEXITY_WEIGHTS, MAX_ATTEMPTS_BEFORE_REPLAN } from './agent-planner.js';
+import { PlannerAgent, TASK_STATUS, MAX_ATTEMPTS_BEFORE_REPLAN } from './agent-planner.js';
 
 // Mock agent executor
 const mockAgentExecutor = {
@@ -27,7 +26,6 @@ const mockAgentExecutor = {
             { description: 'Task 1', complexity: 'simple', dependencies: [], verificationCriteria: ['Test 1'] },
             { description: 'Task 2', complexity: 'medium', dependencies: [0], verificationCriteria: ['Test 2'] }
           ],
-          totalEstimatedComplexity: 3,
           risks: ['Risk 1'],
           assumptions: ['Assumption 1']
         }
@@ -44,12 +42,6 @@ describe('PlannerAgent - Constants', () => {
     assert.strictEqual(TASK_STATUS.COMPLETED, 'completed');
     assert.strictEqual(TASK_STATUS.FAILED, 'failed');
     assert.strictEqual(TASK_STATUS.BLOCKED, 'blocked');
-  });
-
-  it('should export COMPLEXITY_WEIGHTS constants', () => {
-    assert.strictEqual(COMPLEXITY_WEIGHTS.simple, 1);
-    assert.strictEqual(COMPLEXITY_WEIGHTS.medium, 2);
-    assert.strictEqual(COMPLEXITY_WEIGHTS.complex, 3);
   });
 
   it('should export MAX_ATTEMPTS_BEFORE_REPLAN', () => {
@@ -133,7 +125,6 @@ describe('PlannerAgent - Plan Result Parsing', () => {
           name: 'planComplete',
           arguments: {
             tasks: [{ description: 'Test task', complexity: 'simple' }],
-            totalEstimatedComplexity: 1,
             risks: ['Risk 1'],
             assumptions: []
           }
@@ -145,7 +136,6 @@ describe('PlannerAgent - Plan Result Parsing', () => {
 
     assert.strictEqual(parsed.tasks.length, 1);
     assert.strictEqual(parsed.tasks[0].description, 'Test task');
-    assert.strictEqual(parsed.totalEstimatedComplexity, 1);
   });
 
   it('should parse plan from toolCalls array', () => {
@@ -291,46 +281,6 @@ describe('PlannerAgent - Replan Result Parsing', () => {
     assert.strictEqual(parsed.analysis, 'Unable to parse replan response');
     assert.deepStrictEqual(parsed.subtasks, []);
     assert.strictEqual(parsed.blockerResolution, 'Unknown');
-  });
-});
-
-describe('PlannerAgent - Complexity Calculation', () => {
-  let planner;
-
-  beforeEach(() => {
-    agentCore.reset();
-    planner = new PlannerAgent();
-  });
-
-  it('should calculate complexity from tasks', () => {
-    const tasks = [
-      { complexity: 'simple' },   // 1
-      { complexity: 'medium' },   // 2
-      { complexity: 'complex' }   // 3
-    ];
-
-    const complexity = planner._calculateComplexity(tasks);
-
-    assert.strictEqual(complexity, 6);
-  });
-
-  it('should default to medium weight for unknown complexity', () => {
-    const tasks = [
-      { complexity: 'unknown' }
-    ];
-
-    const complexity = planner._calculateComplexity(tasks);
-
-    assert.strictEqual(complexity, 2);
-  });
-
-  it('should return 0 for null/undefined tasks', () => {
-    assert.strictEqual(planner._calculateComplexity(null), 0);
-    assert.strictEqual(planner._calculateComplexity(undefined), 0);
-  });
-
-  it('should return 0 for empty tasks array', () => {
-    assert.strictEqual(planner._calculateComplexity([]), 0);
   });
 });
 

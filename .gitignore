@@ -1,6 +1,7 @@
 # Dependencies
 node_modules/
 .claude-looper/
+.claude-looper-test/
 
 # Logs
 logs/

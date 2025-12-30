@@ -52,7 +52,6 @@
             "description": "Signal plan creation complete",
             "params": [
               { "name": "tasks", "type": "array", "description": "List of task objects" },
-              { "name": "totalEstimatedComplexity", "type": "number" },
               { "name": "risks", "type": "array" },
               { "name": "assumptions", "type": "array" }
             ]
@@ -104,11 +103,6 @@
           }
         ],
         "settings": {
-          "timeoutByComplexity": {
-            "simple": 600000,
-            "medium": 1200000,
-            "complex": 2700000
-          },
           "maxFixCycles": 3
         }
       },
@@ -146,16 +140,7 @@
       "maxFixCycles": 3,
       "requirePrePlanReview": true,
       "maxPlanRevisions": 3,
-      "verifyAllOutputs": true,
-      "timeLimits": {
-        "baseMinutes": 30,
-        "perComplexityPointMinutes": 15,
-        "maxMinutes": 480
-      },
-      "progressCheckInterval": {
-        "maxMinutes": 10,
-        "taskTimeoutFraction": 0.33
-      }
+      "verifyAllOutputs": true
     },
 
     "timeBudget": {
