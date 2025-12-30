@@ -104,7 +104,11 @@
           }
         ],
         "settings": {
-          "timeout": 900000,
+          "timeoutByComplexity": {
+            "simple": 600000,
+            "medium": 1200000,
+            "complex": 2700000
+          },
           "maxFixCycles": 3
         }
       },
@@ -143,8 +147,15 @@
       "requirePrePlanReview": true,
       "maxPlanRevisions": 3,
       "verifyAllOutputs": true,
-      "progressCheckInterval": 300000,
-      "timeLimit": 7200000
+      "timeLimits": {
+        "baseMinutes": 30,
+        "perComplexityPointMinutes": 15,
+        "maxMinutes": 480
+      },
+      "progressCheckInterval": {
+        "maxMinutes": 10,
+        "taskTimeoutFraction": 0.33
+      }
     },
 
     "timeBudget": {

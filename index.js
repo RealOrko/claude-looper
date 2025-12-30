@@ -9,7 +9,16 @@ export { default as agentCore, AgentCore, EventTypes, ChangeTypes } from './agen
 export { default as agentExecutor, AgentExecutor } from './agent-executor.js';
 
 // Agent exports
-export { default as PlannerAgent, TASK_STATUS, COMPLEXITY_WEIGHTS, MAX_ATTEMPTS_BEFORE_REPLAN } from './agent-planner.js';
+export {
+  default as PlannerAgent,
+  TASK_STATUS,
+  COMPLEXITY_WEIGHTS,
+  MAX_ATTEMPTS_BEFORE_REPLAN,
+  DEFAULT_TIME_LIMITS,
+  getTaskTimeout,
+  getWorkflowTimeLimit,
+  getProgressCheckInterval
+} from './agent-planner.js';
 export { default as CoderAgent, IMPL_STATUS, FIX_STATUS } from './agent-coder.js';
 export { default as TesterAgent, TEST_STATUS, SEVERITY } from './agent-tester.js';
 export { default as SupervisorAgent, QUALITY_THRESHOLDS, ESCALATION_LEVELS, VERIFICATION_TYPES } from './agent-supervisor.js';

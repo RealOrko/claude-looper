@@ -30,6 +30,61 @@ const COMPLEXITY_WEIGHTS = {
 // Maximum attempts before re-planning
 const MAX_ATTEMPTS_BEFORE_REPLAN = 3;
 
+// Default time limits (can be overridden by workflow config)
+const DEFAULT_TIME_LIMITS = {
+  timeoutByComplexity: {
+    simple: 600000,    // 10 min
+    medium: 1200000,   // 20 min
+    complex: 2700000   // 45 min
+  },
+  workflow: {
+    baseMinutes: 30,
+    perComplexityPointMinutes: 15,
+    maxMinutes: 480    // 8 hours cap
+  },
+  progressCheck: {
+    maxMinutes: 10,
+    taskTimeoutFraction: 0.33
+  }
+};
+
+/**
+ * Calculate task timeout based on complexity
+ * @param {string} complexity - 'simple', 'medium', or 'complex'
+ * @param {object} config - Optional config override
+ * @returns {number} Timeout in milliseconds
+ */
+function getTaskTimeout(complexity, config = {}) {
+  const timeouts = config.timeoutByComplexity || DEFAULT_TIME_LIMITS.timeoutByComplexity;
+  return timeouts[complexity] || timeouts.medium;
+}
+
+/**
+ * Calculate total workflow time limit based on complexity score
+ * @param {number} totalComplexity - Sum of complexity weights
+ * @param {object} config - Optional config override
+ * @returns {number} Time limit in milliseconds
+ */
+function getWorkflowTimeLimit(totalComplexity, config = {}) {
+  const limits = config.workflow || DEFAULT_TIME_LIMITS.workflow;
+  const calculatedMinutes = limits.baseMinutes + (totalComplexity * limits.perComplexityPointMinutes);
+  const cappedMinutes = Math.min(calculatedMinutes, limits.maxMinutes);
+  return cappedMinutes * 60 * 1000;
+}
+
+/**
+ * Calculate progress check interval based on task timeout
+ * @param {number} taskTimeout - Task timeout in milliseconds
+ * @param {object} config - Optional config override
+ * @returns {number} Interval in milliseconds
+ */
+function getProgressCheckInterval(taskTimeout, config = {}) {
+  const limits = config.progressCheck || DEFAULT_TIME_LIMITS.progressCheck;
+  const maxMs = limits.maxMinutes * 60 * 1000;
+  const fractionMs = taskTimeout * limits.taskTimeoutFraction;
+  return Math.min(fractionMs, maxMs);
+}
+
 // Tool definitions
 const PLANNER_TOOLS = [
   {
@@ -260,7 +315,7 @@ export class PlannerAgent {
                     required: ['description', 'complexity']
                   },
                   minItems: 2,
-                  maxItems: 5
+                  maxItems: 15
                 },
                 blockerResolution: { type: 'string' }
               },
@@ -573,4 +628,12 @@ export class PlannerAgent {
 }
 
 export default PlannerAgent;
-export { TASK_STATUS, COMPLEXITY_WEIGHTS, MAX_ATTEMPTS_BEFORE_REPLAN };
+export {
+  TASK_STATUS,
+  COMPLEXITY_WEIGHTS,
+  MAX_ATTEMPTS_BEFORE_REPLAN,
+  DEFAULT_TIME_LIMITS,
+  getTaskTimeout,
+  getWorkflowTimeLimit,
+  getProgressCheckInterval
+};

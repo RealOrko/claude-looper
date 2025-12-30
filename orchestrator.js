@@ -519,10 +519,10 @@ export class Orchestrator {
         continue;
       }
 
-      // Proactively break down complex tasks before executing
-      if (task.metadata?.complexity === 'complex' && (!task.subtasks || task.subtasks.length === 0)) {
-        this._log(`[Orchestrator] Complex task detected, breaking into subtasks: ${task.description}`);
-        await this.agents.planner.replan(task, 'Proactive breakdown of complex task');
+      // Proactively break down complex and medium tasks before executing
+      if (['complex', 'medium'].includes(task.metadata?.complexity) && (!task.subtasks || task.subtasks.length === 0)) {
+        this._log(`[Orchestrator] ${task.metadata.complexity} task detected, breaking into subtasks: ${task.description}`);
+        await this.agents.planner.replan(task, `Proactive breakdown of ${task.metadata.complexity} task`);
         // Continue loop to pick up the new subtasks
         continue;
       }
