@@ -75,6 +75,10 @@ export class Orchestrator {
 
     // Track pivot count for the current goal
     this.pivotCount = 0;
+
+    // Periodic snapshot interval (null when not running)
+    this.snapshotInterval = null;
+    this.snapshotIntervalMs = options.snapshotIntervalMs || 60000; // Default 60 seconds
   }
 
   /**
@@ -215,6 +219,7 @@ export class Orchestrator {
     this.goal = goal;
     this.startTime = Date.now();
     this.status = EXECUTION_STATUS.RUNNING;
+    this._startPeriodicSnapshots();
 
     // Initialize if not already done
     if (Object.keys(this.agents).length === 0) {
@@ -257,6 +262,7 @@ export class Orchestrator {
 
       // Complete workflow
       this.status = verified ? EXECUTION_STATUS.COMPLETED : EXECUTION_STATUS.FAILED;
+      this._stopPeriodicSnapshots();
       agentCore.completeWorkflow(this.status, {
         duration: Date.now() - this.startTime,
         goal,
@@ -272,6 +278,7 @@ export class Orchestrator {
 
     } catch (error) {
       this.status = EXECUTION_STATUS.FAILED;
+      this._stopPeriodicSnapshots();
       agentCore.completeWorkflow('failed', { error: error.message });
 
       throw error;
@@ -353,6 +360,7 @@ export class Orchestrator {
     this._log(`[Orchestrator] Reset ${resetCount} failed/in-progress tasks for retry`);
 
     this.status = EXECUTION_STATUS.RUNNING;
+    this._startPeriodicSnapshots();
 
     try {
       // Get the current plan from saved tasks
@@ -387,6 +395,7 @@ export class Orchestrator {
 
       // Complete workflow
       this.status = verified ? EXECUTION_STATUS.COMPLETED : EXECUTION_STATUS.FAILED;
+      this._stopPeriodicSnapshots();
       agentCore.completeWorkflow(this.status, {
         duration: Date.now() - this.startTime,
         goal: this.goal,
@@ -404,6 +413,7 @@ export class Orchestrator {
 
     } catch (error) {
       this.status = EXECUTION_STATUS.FAILED;
+      this._stopPeriodicSnapshots();
       agentCore.completeWorkflow('failed', { error: error.message });
       // Save state so we can resume again
       this._snapshot();
@@ -951,6 +961,7 @@ export class Orchestrator {
   pause() {
     if (this.status === EXECUTION_STATUS.RUNNING) {
       this.status = EXECUTION_STATUS.PAUSED;
+      this._stopPeriodicSnapshots();
       this._snapshot();
     }
   }
@@ -961,6 +972,7 @@ export class Orchestrator {
   async resume() {
     if (this.status === EXECUTION_STATUS.PAUSED) {
       this.status = EXECUTION_STATUS.RUNNING;
+      this._startPeriodicSnapshots();
       // Continue from where we left off
     }
   }
@@ -970,6 +982,7 @@ export class Orchestrator {
    */
   abort() {
     this.status = EXECUTION_STATUS.ABORTED;
+    this._stopPeriodicSnapshots();
     agentCore.completeWorkflow('aborted', {
       duration: Date.now() - this.startTime,
       reason: 'User aborted'
@@ -1000,6 +1013,30 @@ export class Orchestrator {
       taskAttempts: taskAttemptsObj,
       pivotCount: this.pivotCount
     });
+  }
+
+  /**
+   * Start periodic snapshots during execution
+   */
+  _startPeriodicSnapshots() {
+    // Don't start if already running
+    if (this.snapshotInterval) return;
+
+    this.snapshotInterval = setInterval(() => {
+      if (this.status === EXECUTION_STATUS.RUNNING) {
+        this._snapshot();
+      }
+    }, this.snapshotIntervalMs);
+  }
+
+  /**
+   * Stop periodic snapshots
+   */
+  _stopPeriodicSnapshots() {
+    if (this.snapshotInterval) {
+      clearInterval(this.snapshotInterval);
+      this.snapshotInterval = null;
+    }
   }
 
   /**
