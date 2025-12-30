@@ -31,7 +31,9 @@ import agentCore from './agent-core.js';
 const ERROR_CATEGORIES = {
   TRANSIENT: ['econnreset', 'etimedout', 'overloaded', 'rate_limit', '529', '503'],
   PERMANENT: ['invalid_api_key', 'permission_denied', 'invalid_request'],
-  TIMEOUT: ['timed out', 'timeout']
+  TIMEOUT: ['timed out', 'timeout'],
+  // Session-related errors that should trigger session reset
+  SESSION: ['session', 'resume', 'conversation not found', 'invalid session', 'exited with code 1']
 };
 
 /**
@@ -116,6 +118,7 @@ export class AgentExecutor {
      * @property {Function} onError - Called when execution fails ({ agentName, error })
      * @property {Function} onRetry - Called when retrying ({ agentName, attempt, maxRetries, delay, error, category })
      * @property {Function} onFallback - Called when switching to fallback model ({ agentName, model })
+     * @property {Function} onSessionCleared - Called when a stale session is cleared ({ agentName, reason })
      * @property {Function} onStdout - Called with stdout data ({ agentName, chunk })
      * @property {Function} onStderr - Called with stderr data ({ agentName, chunk })
      */
@@ -125,6 +128,7 @@ export class AgentExecutor {
       onError: null,
       onRetry: null,
       onFallback: null,
+      onSessionCleared: null,
       onStdout: null,
       onStderr: null
     };
@@ -139,6 +143,7 @@ export class AgentExecutor {
    * @param {Function} [callbacks.onError] - Called when execution fails
    * @param {Function} [callbacks.onRetry] - Called when retrying after failure
    * @param {Function} [callbacks.onFallback] - Called when switching to fallback model
+   * @param {Function} [callbacks.onSessionCleared] - Called when a stale session is cleared
    * @param {Function} [callbacks.onStdout] - Called with stdout data
    * @param {Function} [callbacks.onStderr] - Called with stderr data
    */
@@ -156,6 +161,7 @@ export class AgentExecutor {
       onError: null,
       onRetry: null,
       onFallback: null,
+      onSessionCleared: null,
       onStdout: null,
       onStderr: null
     };
@@ -253,7 +259,7 @@ export class AgentExecutor {
    * Categorize an error for retry logic.
    *
    * @param {Error|string} error - Error to categorize
-   * @returns {'TIMEOUT'|'TRANSIENT'|'PERMANENT'|'UNKNOWN'} Error category
+   * @returns {'TIMEOUT'|'TRANSIENT'|'PERMANENT'|'SESSION'|'UNKNOWN'} Error category
    */
   categorizeError(error) {
     const errorStr = String(error).toLowerCase();
@@ -266,6 +272,9 @@ export class AgentExecutor {
     }
     if (ERROR_CATEGORIES.PERMANENT.some(t => errorStr.includes(t))) {
       return 'PERMANENT';
+    }
+    if (ERROR_CATEGORIES.SESSION.some(t => errorStr.includes(t))) {
+      return 'SESSION';
     }
     return 'UNKNOWN';
   }
@@ -352,7 +361,18 @@ export class AgentExecutor {
           this._invokeCallback('onRetry', { agentName, attempt, maxRetries, delay, error: error.message, category });
           await this.sleep(delay);
 
-          // Try fallback model after first retry
+          // For SESSION errors or after first retry with unknown errors, clear session and start fresh
+          if (category === 'SESSION' || (category === 'UNKNOWN' && attempt >= 2)) {
+            if (this.sessions[agentName]) {
+              if (this.options.verbose) {
+                console.log(`[AgentExecutor] ${agentName} clearing stale session ${this.sessions[agentName]}`);
+              }
+              delete this.sessions[agentName];
+              this._invokeCallback('onSessionCleared', { agentName, reason: category });
+            }
+          }
+
+          // Try fallback model after second retry
           if (options.fallbackModel && attempt >= 2 && !options._usingFallback) {
             if (this.options.verbose) {
               console.log(`[AgentExecutor] ${agentName} switching to fallback model: ${options.fallbackModel}`);
@@ -453,7 +473,19 @@ export class AgentExecutor {
 
       proc.on('close', (code) => {
         if (code !== 0 && code !== null) {
-          reject(new Error(`Claude Code exited with code ${code} for ${agentName}: ${stderr}`));
+          // Build a useful error message with available diagnostics
+          let errorDetails = stderr.trim();
+          if (!errorDetails && stdout) {
+            // If stderr is empty, check stdout for error info (last 500 chars)
+            const stdoutTail = stdout.slice(-500).trim();
+            errorDetails = `(stderr empty, stdout tail: ${stdoutTail})`;
+          }
+          if (!errorDetails) {
+            errorDetails = '(no output captured - possible crash or signal)';
+          }
+          // Include session info for debugging
+          const sessionInfo = this.sessions[agentName] ? ` [session: ${this.sessions[agentName]}]` : ' [no session]';
+          reject(new Error(`Claude Code exited with code ${code} for ${agentName}${sessionInfo}: ${errorDetails}`));
           return;
         }
 
