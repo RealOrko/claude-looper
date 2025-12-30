@@ -171,7 +171,8 @@ export class PlannerAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        goalId: goalObj.id
       }
     );
 
@@ -279,7 +280,9 @@ export class PlannerAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        taskId: task.id,
+        goalId: task.parentGoalId || null
       }
     );
 

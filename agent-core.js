@@ -48,6 +48,7 @@ export const EventTypes = {
   MEMORY_UPDATED: 'memory:updated',
   OUTPUT_RECORDED: 'output:recorded',
   INTERACTION_LOGGED: 'interaction:logged',
+  INVOCATION_RECORDED: 'invocation:recorded',
   SNAPSHOT_SAVED: 'snapshot:saved',
   SNAPSHOT_LOADED: 'snapshot:loaded',
   WORKFLOW_STARTED: 'workflow:started',
@@ -143,10 +144,24 @@ class AgentCore extends EventEmitter {
     this.eventLog = [];
 
     /**
+     * Invocations log - records every Claude CLI invocation with full details.
+     * This is the rich graph of all prompts, responses, tool calls, and token usage.
+     * @type {Array<Object>}
+     */
+    this.invocations = [];
+
+    /**
      * Maximum number of events to keep in the log.
      * @type {number}
      */
     this.maxEventLogSize = 500;
+
+    /**
+     * Maximum number of invocations to keep (0 = unlimited).
+     * Invocations are crucial for debugging so we keep more than events.
+     * @type {number}
+     */
+    this.maxInvocationsSize = 0;
 
     /**
      * Directory name for state files (relative to cwd).
@@ -658,6 +673,140 @@ class AgentCore extends EventEmitter {
   }
 
   /**
+   * Record a Claude CLI invocation with full details.
+   * This captures the complete execution trace including prompts, responses,
+   * tool calls, token usage, and timing for debugging and analysis.
+   * Emits 'invocation:recorded' event.
+   *
+   * @param {string} agentName - Agent that made the invocation
+   * @param {Object} invocation - Invocation details
+   * @param {string} invocation.prompt - The full prompt sent to Claude
+   * @param {string} [invocation.templatePath] - Template used to generate the prompt
+   * @param {Object} [invocation.templateContext] - Context passed to the template
+   * @param {string} invocation.response - Claude's full response text
+   * @param {Array} [invocation.toolCalls] - Tool calls with full arguments
+   * @param {string} [invocation.taskId] - Associated task ID
+   * @param {string} [invocation.goalId] - Associated goal ID
+   * @param {string} [invocation.sessionId] - Claude CLI session ID
+   * @param {string} [invocation.model] - Model used for this invocation
+   * @param {number} [invocation.tokensIn] - Input tokens used
+   * @param {number} [invocation.tokensOut] - Output tokens generated
+   * @param {number} [invocation.costUsd] - Cost in USD
+   * @param {number} [invocation.durationMs] - Execution duration in milliseconds
+   * @param {string} [invocation.status] - Outcome status (success, error, timeout)
+   * @param {string} [invocation.error] - Error message if failed
+   * @param {Object} [invocation.metadata] - Additional metadata
+   * @returns {Object} The created invocation entry with id and timestamp
+   */
+  recordInvocation(agentName, invocation) {
+    const agent = this.agents[agentName];
+
+    const invocationEntry = {
+      id: `inv-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      agentName,
+      prompt: invocation.prompt,
+      templatePath: invocation.templatePath || null,
+      templateContext: invocation.templateContext || null,
+      response: invocation.response,
+      toolCalls: invocation.toolCalls || [],
+      taskId: invocation.taskId || null,
+      goalId: invocation.goalId || null,
+      sessionId: invocation.sessionId || null,
+      model: invocation.model || (agent?.model) || null,
+      tokensIn: invocation.tokensIn || null,
+      tokensOut: invocation.tokensOut || null,
+      costUsd: invocation.costUsd || null,
+      durationMs: invocation.durationMs || null,
+      status: invocation.status || 'success',
+      error: invocation.error || null,
+      timestamp: Date.now(),
+      metadata: invocation.metadata || {}
+    };
+
+    this.invocations.push(invocationEntry);
+
+    // Keep invocations bounded if limit is set
+    if (this.maxInvocationsSize > 0 && this.invocations.length > this.maxInvocationsSize) {
+      this.invocations = this.invocations.slice(-this.maxInvocationsSize);
+    }
+
+    if (agent) {
+      agent.lastActivity = Date.now();
+    }
+
+    this._emitEvent(EventTypes.INVOCATION_RECORDED, {
+      source: agentName,
+      changeType: ChangeTypes.ADDED,
+      object: invocationEntry,
+      agentState: agent
+    });
+
+    return invocationEntry;
+  }
+
+  /**
+   * Get all invocations, optionally filtered.
+   *
+   * @param {Object} [filter={}] - Filter options
+   * @param {string} [filter.agentName] - Filter by agent name
+   * @param {string} [filter.taskId] - Filter by task ID
+   * @param {string} [filter.goalId] - Filter by goal ID
+   * @param {string} [filter.status] - Filter by status
+   * @returns {Array<Object>} Matching invocations
+   */
+  getInvocations(filter = {}) {
+    let result = this.invocations;
+
+    if (filter.agentName) {
+      result = result.filter(inv => inv.agentName === filter.agentName);
+    }
+    if (filter.taskId) {
+      result = result.filter(inv => inv.taskId === filter.taskId);
+    }
+    if (filter.goalId) {
+      result = result.filter(inv => inv.goalId === filter.goalId);
+    }
+    if (filter.status) {
+      result = result.filter(inv => inv.status === filter.status);
+    }
+
+    return result;
+  }
+
+  /**
+   * Get invocation statistics.
+   *
+   * @returns {Object} Statistics about invocations
+   */
+  getInvocationStats() {
+    const stats = {
+      total: this.invocations.length,
+      byAgent: {},
+      byStatus: {},
+      totalTokensIn: 0,
+      totalTokensOut: 0,
+      totalCostUsd: 0,
+      totalDurationMs: 0
+    };
+
+    for (const inv of this.invocations) {
+      // By agent
+      stats.byAgent[inv.agentName] = (stats.byAgent[inv.agentName] || 0) + 1;
+
+      // By status
+      stats.byStatus[inv.status] = (stats.byStatus[inv.status] || 0) + 1;
+
+      // Totals
+      if (inv.tokensIn) stats.totalTokensIn += inv.tokensIn;
+      if (inv.tokensOut) stats.totalTokensOut += inv.tokensOut;
+      if (inv.costUsd) stats.totalCostUsd += inv.costUsd;
+      if (inv.durationMs) stats.totalDurationMs += inv.durationMs;
+    }
+
+    return stats;
+  }
+
+  /**
    * Start a new workflow.
    * Emits 'workflow:started' event.
    *
@@ -803,7 +952,7 @@ class AgentCore extends EventEmitter {
 
   /**
    * Save current state to disk for resumability.
-   * Saves agents, workflow, and recent event log to .claude-looper/state.json.
+   * Saves agents, workflow, invocations, and recent event log to .claude-looper/state.json.
    * Emits 'snapshot:saved' event.
    *
    * @param {Object} [extras={}] - Additional state to persist (e.g., executor sessions)
@@ -813,10 +962,11 @@ class AgentCore extends EventEmitter {
     this.ensureStateDir();
 
     const state = {
-      version: 1,
+      version: 2, // Bumped version for invocations support
       timestamp: Date.now(),
       agents: this.agents,
       workflow: this.workflow,
+      invocations: this.invocations, // Full invocations graph - no truncation
       eventLog: this.eventLog.slice(-100), // Save last 100 events
       ...extras
     };
@@ -861,6 +1011,7 @@ class AgentCore extends EventEmitter {
 
     this.agents = state.agents || {};
     this.workflow = state.workflow || { active: false };
+    this.invocations = state.invocations || [];
     this.eventLog = state.eventLog || [];
 
     this._emitEvent(EventTypes.SNAPSHOT_LOADED, {

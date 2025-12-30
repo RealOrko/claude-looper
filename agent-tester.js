@@ -162,7 +162,9 @@ export class TesterAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        taskId: task.id,
+        goalId: task.parentGoalId || null
       }
     );
 

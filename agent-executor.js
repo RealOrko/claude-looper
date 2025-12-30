@@ -20,6 +20,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import Handlebars from 'handlebars';
+import agentCore from './agent-core.js';
 
 /**
  * Error categories for retry decisions.
@@ -304,6 +305,7 @@ export class AgentExecutor {
    */
   async execute(agentName, prompt, options = {}) {
     const maxRetries = options.maxRetries ?? this.options.maxRetries;
+    const startTime = Date.now();
     let lastError = null;
     let attempt = 0;
 
@@ -321,12 +323,18 @@ export class AgentExecutor {
         this.metrics.totalCalls++;
         this.metrics.callsByAgent[agentName]++;
         this._invokeCallback('onComplete', { agentName, result });
+
+        // Record successful invocation
+        this._recordInvocation(agentName, prompt, result, options, startTime, 'success');
+
         return result;
       } catch (error) {
         lastError = error;
         const category = this.categorizeError(error);
 
         if (category === 'PERMANENT') {
+          // Record failed invocation
+          this._recordInvocation(agentName, prompt, null, options, startTime, 'error', error.message);
           this._invokeCallback('onError', { agentName, error });
           throw error;
         }
@@ -357,8 +365,47 @@ export class AgentExecutor {
       }
     }
 
+    // Record final failed invocation after all retries exhausted
+    this._recordInvocation(agentName, prompt, null, options, startTime, 'error', lastError?.message);
+
     this._invokeCallback('onError', { agentName, error: lastError });
     throw lastError;
+  }
+
+  /**
+   * Record an invocation to agentCore for state persistence.
+   * @private
+   */
+  _recordInvocation(agentName, prompt, result, options, startTime, status, errorMessage = null) {
+    try {
+      agentCore.recordInvocation(agentName, {
+        prompt,
+        templatePath: options._templatePath || null,
+        templateContext: options._templateContext || null,
+        response: result?.response || null,
+        toolCalls: result?.toolCalls || [],
+        taskId: options.taskId || null,
+        goalId: options.goalId || null,
+        sessionId: result?.sessionId || this.sessions[agentName] || null,
+        model: options._usingFallback ? options.model : (options.model || null),
+        tokensIn: result?.tokensIn || null,
+        tokensOut: result?.tokensOut || null,
+        costUsd: result?.costUsd || null,
+        durationMs: Date.now() - startTime,
+        status,
+        error: errorMessage,
+        metadata: {
+          numTurns: result?.numTurns || null,
+          retryCount: this.metrics.totalRetries,
+          usedFallback: options._usingFallback || false
+        }
+      });
+    } catch (e) {
+      // Don't let invocation recording errors break execution
+      if (this.options.verbose) {
+        console.warn(`[AgentExecutor] Failed to record invocation: ${e.message}`);
+      }
+    }
   }
 
   /**
@@ -601,7 +648,12 @@ export class AgentExecutor {
    */
   async executeWithTemplate(agentName, templatePath, context = {}, options = {}) {
     const prompt = this.renderTemplate(templatePath, context);
-    return this.execute(agentName, prompt, options);
+    // Pass template info for invocation recording
+    return this.execute(agentName, prompt, {
+      ...options,
+      _templatePath: templatePath,
+      _templateContext: context
+    });
   }
 
   /**

@@ -202,7 +202,9 @@ export class SupervisorAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        taskId: task?.id || null,
+        goalId: task?.parentGoalId || null
       }
     );
 
@@ -309,7 +311,8 @@ export class SupervisorAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        goalId: context.goalId || null
       }
     );
 
@@ -395,7 +398,9 @@ export class SupervisorAgent {
       {
         model: this.model,
         fallbackModel: this.fallbackModel,
-        jsonSchema
+        jsonSchema,
+        taskId: task?.id || null,
+        goalId: task?.parentGoalId || null
       }
     );
 

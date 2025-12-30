@@ -27,6 +27,43 @@ RUN apt-get update && apt-get install -y \
     direnv \
     && rm -rf /var/lib/apt/lists/*
 
+# Install LLVM 19 toolchain for kernel development with ThinLTO
+RUN wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc \
+    && echo "deb http://apt.llvm.org/noble/ llvm-toolchain-noble-19 main" >> /etc/apt/sources.list.d/llvm.list \
+    && apt-get update && apt-get install -y \
+    clang-19 \
+    lld-19 \
+    llvm-19 \
+    llvm-19-dev \
+    llvm-19-tools \
+    libclang-19-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && update-alternatives --install /usr/bin/clang clang /usr/bin/clang-19 100 \
+    && update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-19 100 \
+    && update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-19 100 \
+    && update-alternatives --install /usr/bin/llvm-ar llvm-ar /usr/bin/llvm-ar-19 100 \
+    && update-alternatives --install /usr/bin/llvm-nm llvm-nm /usr/bin/llvm-nm-19 100 \
+    && update-alternatives --install /usr/bin/llvm-objcopy llvm-objcopy /usr/bin/llvm-objcopy-19 100 \
+    && update-alternatives --install /usr/bin/llvm-objdump llvm-objdump /usr/bin/llvm-objdump-19 100 \
+    && update-alternatives --install /usr/bin/llvm-strip llvm-strip /usr/bin/llvm-strip-19 100 \
+    && update-alternatives --install /usr/bin/llvm-readelf llvm-readelf /usr/bin/llvm-readelf-19 100
+
+# Install kernel build dependencies
+RUN apt-get update && apt-get install -y \
+    flex \
+    bison \
+    libelf-dev \
+    libssl-dev \
+    libncurses-dev \
+    bc \
+    cpio \
+    kmod \
+    rsync \
+    dwarves \
+    zstd \
+    libzstd-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install Python latest (via deadsnakes PPA for latest version)
 RUN add-apt-repository ppa:deadsnakes/ppa -y \
     && apt-get update \
