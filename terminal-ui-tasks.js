@@ -31,10 +31,8 @@ export class TasksView {
     if (this.taskGraphFlatList.length === 0) return;
     this.taskGraphSelectedIndex = Math.max(0, this.taskGraphSelectedIndex - 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
-    // Scroll after render to ensure content is laid out
     this.ui.scrollToLine(this.taskGraphSelectedIndex);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -45,10 +43,8 @@ export class TasksView {
     if (this.taskGraphFlatList.length === 0) return;
     this.taskGraphSelectedIndex = Math.min(this.taskGraphFlatList.length - 1, this.taskGraphSelectedIndex + 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
-    // Scroll after render to ensure content is laid out
     this.ui.scrollToLine(this.taskGraphSelectedIndex);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -64,10 +60,13 @@ export class TasksView {
 
   /**
    * Refresh tasks view content - Enhanced Task Dependency Graph
+   * Returns { left: [...], right: [...] } for split panel rendering
    */
   refresh() {
-    const lines = [];
-    const contentWidth = getContentWidth(this.ui.widgets.mainPanel);
+    const leftPanel = this.ui.widgets.leftPanel;
+    const rightPanel = this.ui.widgets.rightPanel;
+    const leftWidth = leftPanel ? (leftPanel.width || 40) - 2 : 40;
+    const rightWidth = rightPanel ? (rightPanel.width || 40) - 2 : 40;
 
     // Build task map and flat list
     const taskMap = new Map();
@@ -84,47 +83,26 @@ export class TasksView {
     }
 
     if (this.ui.tasks.length === 0) {
-      lines.push('{gray-fg}No tasks recorded yet...{/gray-fg}');
-      lines.push('{gray-fg}Tasks will appear here when the planner creates them.{/gray-fg}');
-      return lines;
+      return {
+        left: ['{gray-fg}No tasks recorded yet...{/gray-fg}', '{gray-fg}Tasks will appear here when the planner creates them.{/gray-fg}'],
+        right: ['{gray-fg}Select a task to view details{/gray-fg}']
+      };
     }
-
-    // Calculate layout dimensions for side-by-side view
-    const graphWidth = Math.floor(contentWidth * 0.5);
-    const detailWidth = contentWidth - graphWidth - 3;
 
     // Render task tree into left column
     const leftLines = [];
-    this._renderTaskTreeView(leftLines, taskMap, graphWidth);
+    this._renderTaskTreeView(leftLines, taskMap, leftWidth);
 
     // Render details into right column
     const rightLines = [];
     if (this.taskGraphFlatList.length > 0) {
       const selectedTask = this.taskGraphFlatList[this.taskGraphSelectedIndex];
       if (selectedTask) {
-        this._renderTaskDetailsColumn(rightLines, selectedTask, taskMap, detailWidth);
+        this._renderTaskDetailsColumn(rightLines, selectedTask, taskMap, rightWidth);
       }
     }
 
-    // Merge columns side by side
-    const maxLines = Math.max(leftLines.length, rightLines.length);
-    for (let i = 0; i < maxLines; i++) {
-      let leftLine = leftLines[i] || '';
-      const rightLine = rightLines[i] || '';
-
-      // Truncate left line if it exceeds graphWidth
-      const leftClean = stripTags(leftLine);
-      if (leftClean.length > graphWidth - 1) {
-        // Need to truncate - find a safe cut point
-        leftLine = truncateWithTags(leftLine, graphWidth - 4) + '...';
-      }
-
-      const leftLen = stripTags(leftLine).length;
-      const padding = Math.max(0, graphWidth - leftLen);
-      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
-    }
-
-    return lines;
+    return { left: leftLines, right: rightLines };
   }
 
   /**
@@ -236,9 +214,6 @@ export class TasksView {
    * Render task details column for side-by-side view
    */
   _renderTaskDetailsColumn(lines, task, taskMap, detailWidth) {
-    lines.push('{bold}Details:{/bold}');
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, detailWidth))}{/cyan-fg}`);
-
     // Status
     const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
     lines.push(`{white-fg}Status:{/white-fg} {${style.fg}-fg}${task.status}{/${style.fg}-fg}`);
@@ -254,11 +229,8 @@ export class TasksView {
     lines.push('');
     lines.push('{white-fg}Description:{/white-fg}');
     const descWrapped = wrapText(task.description || 'No description', detailWidth - 2);
-    for (const line of descWrapped.slice(0, 4)) {
+    for (const line of descWrapped) {
       lines.push(`  {gray-fg}${line}{/gray-fg}`);
-    }
-    if (descWrapped.length > 4) {
-      lines.push(`  {gray-fg}...{/gray-fg}`);
     }
 
     // Verification Criteria
@@ -266,12 +238,11 @@ export class TasksView {
     if (criteria.length > 0) {
       lines.push('');
       lines.push('{white-fg}Criteria:{/white-fg}');
-      for (const criterion of criteria.slice(0, 4)) {
-        const critText = truncate(criterion, detailWidth - 4);
-        lines.push(`  {cyan-fg}+{/cyan-fg} ${critText}`);
-      }
-      if (criteria.length > 4) {
-        lines.push(`  {gray-fg}... +${criteria.length - 4} more{/gray-fg}`);
+      for (const criterion of criteria) {
+        const critWrapped = wrapText(criterion, detailWidth - 4);
+        for (const line of critWrapped) {
+          lines.push(`  {cyan-fg}+{/cyan-fg} ${line}`);
+        }
       }
     }
 
@@ -280,16 +251,12 @@ export class TasksView {
     if (subtaskIds.length > 0) {
       lines.push('');
       lines.push('{white-fg}Subtasks:{/white-fg}');
-      for (const subtaskId of subtaskIds.slice(0, 3)) {
+      for (const subtaskId of subtaskIds) {
         const subtask = taskMap.get(subtaskId);
         if (subtask) {
           const subStyle = STATUS_STYLES[subtask.status] || STATUS_STYLES.pending;
-          const subDesc = truncate(subtask.description || subtaskId, detailWidth - 6);
-          lines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subDesc}`);
+          lines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subtask.description || subtaskId}`);
         }
-      }
-      if (subtaskIds.length > 3) {
-        lines.push(`  {gray-fg}... +${subtaskIds.length - 3} more{/gray-fg}`);
       }
     }
   }

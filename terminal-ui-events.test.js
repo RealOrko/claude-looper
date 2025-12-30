@@ -45,13 +45,21 @@ function createMockUI() {
   return {
     historyStore: store,
     widgets: {
-      mainPanel: { width: 100 }
+      leftPanel: { width: 50 },
+      rightPanel: { width: 50 }
     },
     screen: {
       render: () => {}
     },
     _renderCurrentView: () => {}
   };
+}
+
+// Helper to combine left and right content for testing
+function getContentString(result) {
+  const left = (result.left || []).join('\n');
+  const right = (result.right || []).join('\n');
+  return left + '\n' + right;
 }
 
 describe('EventsView - Initialization', () => {
@@ -113,7 +121,7 @@ describe('EventsView - Empty State', () => {
   it('should display empty state when no events', () => {
     const content = eventsView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('No events') || contentStr.length > 0, 'Should handle empty state');
   });
 });
@@ -203,7 +211,7 @@ describe('EventsView - Priority Highlighting', () => {
     eventsView.refresh();
 
     const content = eventsView.refresh();
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('ERROR') || contentStr.includes('red'), 'Should highlight error events');
     assert.ok(eventsView.eventList[0]._priority === 'error', 'Should have error priority');
   });

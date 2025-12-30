@@ -36,10 +36,8 @@ export class EventsView {
     if (this.eventList.length === 0) return;
     this.eventSelectedIndex = Math.min(this.eventList.length - 1, this.eventSelectedIndex + 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
-    // Scroll after render to ensure content is laid out
     this.ui.scrollToLine(this.eventSelectedIndex);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -50,10 +48,8 @@ export class EventsView {
     if (this.eventList.length === 0) return;
     this.eventSelectedIndex = Math.max(0, this.eventSelectedIndex - 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
-    // Scroll after render to ensure content is laid out
     this.ui.scrollToLine(this.eventSelectedIndex);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -265,10 +261,13 @@ export class EventsView {
 
   /**
    * Refresh events view content - side-by-side layout
+   * Returns { left: [...], right: [...] } for split panel rendering
    */
   refresh() {
-    const lines = [];
-    const contentWidth = getContentWidth(this.ui.widgets.mainPanel);
+    const leftPanel = this.ui.widgets.leftPanel;
+    const rightPanel = this.ui.widgets.rightPanel;
+    const leftWidth = leftPanel ? (leftPanel.width || 40) - 2 : 40;
+    const rightWidth = rightPanel ? (rightPanel.width || 40) - 2 : 40;
 
     // Get all events
     const allEvents = this.ui.historyStore.queryByType(HistoryEntryTypes.EVENT, { order: 'desc', limit: 500 });
@@ -285,13 +284,11 @@ export class EventsView {
     }
 
     if (categorizedEvents.length === 0) {
-      lines.push('{gray-fg}No events recorded yet...{/gray-fg}');
-      return lines;
+      return {
+        left: ['{gray-fg}No events recorded yet...{/gray-fg}'],
+        right: ['{gray-fg}Select an event to view details{/gray-fg}']
+      };
     }
-
-    // Side-by-side layout
-    const listWidth = Math.floor(contentWidth * 0.5);
-    const detailWidth = contentWidth - listWidth - 3;
 
     // Build left column (list)
     const leftLines = [];
@@ -303,7 +300,7 @@ export class EventsView {
       const source = event.data?.source || event.agentName || '?';
       const priority = event._priority || 'info';
       const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
-      const desc = truncate(type, listWidth - 20);
+      const desc = truncate(type, leftWidth - 20);
       // Use bold for selection (same style as task tree)
       const line = `{gray-fg}${time}{/gray-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}`;
       leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
@@ -314,25 +311,11 @@ export class EventsView {
     if (categorizedEvents.length > 0) {
       const selected = categorizedEvents[this.eventSelectedIndex];
       if (selected) {
-        this._renderEventDetails(rightLines, selected, detailWidth);
+        this._renderEventDetails(rightLines, selected, rightWidth);
       }
     }
 
-    // Merge columns
-    const maxLines = Math.max(leftLines.length, rightLines.length);
-    for (let i = 0; i < maxLines; i++) {
-      let leftLine = leftLines[i] || '';
-      const rightLine = rightLines[i] || '';
-      const leftClean = stripTags(leftLine);
-      if (leftClean.length > listWidth - 1) {
-        leftLine = truncateWithTags(leftLine, listWidth - 4) + '...';
-      }
-      const leftLen = stripTags(leftLine).length;
-      const padding = Math.max(0, listWidth - leftLen);
-      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
-    }
-
-    return lines;
+    return { left: leftLines, right: rightLines };
   }
 
   /**
@@ -345,8 +328,6 @@ export class EventsView {
     const priority = event._priority || 'info';
     const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
 
-    lines.push('{bold}Details:{/bold}');
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, width))}{/cyan-fg}`);
     lines.push(`{white-fg}Type:{/white-fg} {${color}-fg}${type}{/${color}-fg}`);
     lines.push(`{white-fg}Source:{/white-fg} {cyan-fg}${source}{/cyan-fg}`);
     lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
@@ -356,10 +337,9 @@ export class EventsView {
     if (event.data?.object) {
       lines.push('{white-fg}Object:{/white-fg}');
       const objStr = typeof event.data.object === 'object' ? JSON.stringify(event.data.object, null, 2) : String(event.data.object);
-      for (const line of objStr.split('\n').slice(0, 15)) {
-        lines.push(`  {gray-fg}${truncate(line, width - 4)}{/gray-fg}`);
+      for (const line of objStr.split('\n')) {
+        lines.push(`  {gray-fg}${line}{/gray-fg}`);
       }
-      if (objStr.split('\n').length > 15) lines.push('  {gray-fg}...{/gray-fg}');
     }
   }
 

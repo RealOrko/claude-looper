@@ -494,10 +494,12 @@ describe('TerminalUIMultiView - View Content Refresh', () => {
 
     ui._refreshAllViews();
 
-    // All views should have content
+    // All views should have content with left and right arrays
     for (const viewType of Object.values(ViewTypes)) {
       const content = ui.viewContent[viewType];
-      assert.ok(Array.isArray(content), `${viewType} content should be array`);
+      assert.ok(content && typeof content === 'object', `${viewType} content should be object`);
+      assert.ok(Array.isArray(content.left), `${viewType} content.left should be array`);
+      assert.ok(Array.isArray(content.right), `${viewType} content.right should be array`);
     }
   });
 
@@ -510,7 +512,8 @@ describe('TerminalUIMultiView - View Content Refresh', () => {
     ui.viewContent[ViewTypes.TASKS] = content;
 
     const tasksContent = ui.viewContent[ViewTypes.TASKS];
-    assert.ok(Array.isArray(tasksContent));
-    assert.ok(tasksContent.length > 0, 'Should have task content');
+    assert.ok(tasksContent && typeof tasksContent === 'object');
+    assert.ok(Array.isArray(tasksContent.left), 'Should have left content');
+    assert.ok(tasksContent.left.length > 0, 'Should have task content in left panel');
   });
 });

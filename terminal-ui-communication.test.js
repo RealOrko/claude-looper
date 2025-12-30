@@ -45,13 +45,21 @@ function createMockUI() {
   return {
     historyStore: store,
     widgets: {
-      mainPanel: { width: 100 }
+      leftPanel: { width: 50 },
+      rightPanel: { width: 50 }
     },
     screen: {
       render: () => {}
     },
     _renderCurrentView: () => {}
   };
+}
+
+// Helper to combine left and right content for testing
+function getContentString(result) {
+  const left = (result.left || []).join('\n');
+  const right = (result.right || []).join('\n');
+  return left + '\n' + right;
 }
 
 describe('CommunicationView - Initialization', () => {
@@ -101,7 +109,7 @@ describe('CommunicationView - Empty State', () => {
   it('should display empty state when no communications', () => {
     const content = commView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('No agent communications') || contentStr.includes('communications'), 'Should show empty state');
   });
 });
@@ -181,7 +189,7 @@ describe('CommunicationView - Displaying Entries', () => {
 
     const content = commView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // Uses <- for prompts in list view
     assert.ok(contentStr.includes('<-') || contentStr.includes('PROMPT'), 'Should show prompt indicator');
     assert.ok(contentStr.includes('planner'), 'Should show agent name');
@@ -193,7 +201,7 @@ describe('CommunicationView - Displaying Entries', () => {
 
     const content = commView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // Uses -> for responses in list view
     assert.ok(contentStr.includes('->') || contentStr.includes('RESPONSE'), 'Should show response indicator');
     assert.ok(contentStr.includes('coder'), 'Should show agent name');
@@ -207,7 +215,7 @@ describe('CommunicationView - Displaying Entries', () => {
 
     const content = commView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('planner') || contentStr.includes('coder'), 'Should show agents');
   });
 
@@ -216,7 +224,7 @@ describe('CommunicationView - Displaying Entries', () => {
 
     const content = commView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('TOOL') || contentStr.includes('Edit'), 'Should show tool call');
   });
 });
@@ -457,7 +465,7 @@ describe('CommunicationView - Phase Changes', () => {
     assert.ok(commView.commInteractionList.length >= 6, 'Should have all entries from all phases');
 
     const content = commView.refresh();
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('planner'), 'Should include planner entries');
     assert.ok(contentStr.includes('coder'), 'Should include coder entries');
     assert.ok(contentStr.includes('tester'), 'Should include tester entries');

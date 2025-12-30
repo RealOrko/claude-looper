@@ -34,11 +34,10 @@ export class CommunicationView {
     if (this.commInteractionList.length === 0) return;
     this.commSelectedIndex = Math.max(0, this.commSelectedIndex - 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
     // Calculate display line (list is reversed, so newer items are at top)
     const displayLine = this.commInteractionList.length - 1 - this.commSelectedIndex;
     this.ui.scrollToLine(displayLine);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -49,11 +48,10 @@ export class CommunicationView {
     if (this.commInteractionList.length === 0) return;
     this.commSelectedIndex = Math.min(this.commInteractionList.length - 1, this.commSelectedIndex + 1);
     this.refresh();
-    this.ui._renderCurrentView();
-    this.ui.screen.render();
     // Calculate display line (list is reversed, so older items are at bottom)
     const displayLine = this.commInteractionList.length - 1 - this.commSelectedIndex;
     this.ui.scrollToLine(displayLine);
+    this.ui._renderCurrentView();
     this.ui.screen.render();
   }
 
@@ -108,10 +106,13 @@ export class CommunicationView {
 
   /**
    * Refresh communication view content - Enhanced with full interaction timeline
+   * Returns { left: [...], right: [...] } for split panel rendering
    */
   refresh() {
-    const lines = [];
-    const contentWidth = getContentWidth(this.ui.widgets.mainPanel);
+    const leftPanel = this.ui.widgets.leftPanel;
+    const rightPanel = this.ui.widgets.rightPanel;
+    const leftWidth = leftPanel ? (leftPanel.width || 40) - 2 : 40;
+    const rightWidth = rightPanel ? (rightPanel.width || 40) - 2 : 40;
 
     // Gather all communication-related entries
     const allEntries = this._gatherCommunicationEntries();
@@ -128,13 +129,11 @@ export class CommunicationView {
     }
 
     if (filtered.length === 0) {
-      lines.push('{gray-fg}No agent communications recorded yet...{/gray-fg}');
-      return lines;
+      return {
+        left: ['{gray-fg}No agent communications recorded yet...{/gray-fg}'],
+        right: ['{gray-fg}Select a communication to view details{/gray-fg}']
+      };
     }
-
-    // Side-by-side layout like Tasks
-    const listWidth = Math.floor(contentWidth * 0.5);
-    const detailWidth = contentWidth - listWidth - 3;
 
     // Build left column (list)
     const leftLines = [];
@@ -146,7 +145,7 @@ export class CommunicationView {
       const time = formatTimestamp(entry.timestamp);
       const agent = entry.agentName || entry.data?.agentName || '?';
       const type = this._getCommTypeLabel(entry.entryType);
-      const desc = truncate(this._getCommPreview(entry), listWidth - 25);
+      const desc = truncate(this._getCommPreview(entry), leftWidth - 25);
       // Use bold for selection (same style as task tree)
       const line = `{gray-fg}${time}{/gray-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}`;
       leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
@@ -157,25 +156,11 @@ export class CommunicationView {
     if (filtered.length > 0) {
       const selected = filtered[this.commSelectedIndex];
       if (selected) {
-        this._renderCommDetails(rightLines, selected, detailWidth);
+        this._renderCommDetails(rightLines, selected, rightWidth);
       }
     }
 
-    // Merge columns
-    const maxLines = Math.max(leftLines.length, rightLines.length);
-    for (let i = 0; i < maxLines; i++) {
-      let leftLine = leftLines[i] || '';
-      const rightLine = rightLines[i] || '';
-      const leftClean = stripTags(leftLine);
-      if (leftClean.length > listWidth - 1) {
-        leftLine = truncateWithTags(leftLine, listWidth - 4) + '...';
-      }
-      const leftLen = stripTags(leftLine).length;
-      const padding = Math.max(0, listWidth - leftLen);
-      lines.push(`${leftLine}${' '.repeat(padding)} {gray-fg}|{/gray-fg} ${rightLine}`);
-    }
-
-    return lines;
+    return { left: leftLines, right: rightLines };
   }
 
   /**
@@ -211,8 +196,6 @@ export class CommunicationView {
     const time = formatTimestamp(entry.timestamp);
     const agent = entry.agentName || entry.data?.agentName || 'unknown';
 
-    lines.push('{bold}Details:{/bold}');
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(30, width))}{/cyan-fg}`);
     lines.push(`{white-fg}Type:{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${entry.entryType}{/${this._getCommTypeColor(entry.entryType)}-fg}`);
     lines.push(`{white-fg}Agent:{/white-fg} {cyan-fg}${agent}{/cyan-fg}`);
     lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
@@ -221,10 +204,9 @@ export class CommunicationView {
     if (entry.data?.content) {
       lines.push('{white-fg}Content:{/white-fg}');
       const wrapped = wrapText(entry.data.content, width - 2);
-      for (const line of wrapped.slice(0, 15)) {
+      for (const line of wrapped) {
         lines.push(`  {gray-fg}${line}{/gray-fg}`);
       }
-      if (wrapped.length > 15) lines.push('  {gray-fg}...{/gray-fg}');
     }
 
     if (entry.data?.toolName) {
@@ -232,22 +214,22 @@ export class CommunicationView {
       if (entry.data?.input) {
         lines.push('{white-fg}Input:{/white-fg}');
         const inputStr = typeof entry.data.input === 'object' ? JSON.stringify(entry.data.input, null, 2) : String(entry.data.input);
-        for (const line of inputStr.split('\n').slice(0, 10)) {
-          lines.push(`  {gray-fg}${truncate(line, width - 4)}{/gray-fg}`);
+        for (const line of inputStr.split('\n')) {
+          lines.push(`  {gray-fg}${line}{/gray-fg}`);
         }
       }
       if (entry.data?.result) {
         lines.push('{white-fg}Result:{/white-fg}');
         const resultStr = typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result, null, 2) : String(entry.data.result);
-        for (const line of resultStr.split('\n').slice(0, 10)) {
-          lines.push(`  {gray-fg}${truncate(line, width - 4)}{/gray-fg}`);
+        for (const line of resultStr.split('\n')) {
+          lines.push(`  {gray-fg}${line}{/gray-fg}`);
         }
       }
     }
 
     if (entry.data?.toolCalls?.length > 0) {
       lines.push(`{white-fg}Tool Calls:{/white-fg} ${entry.data.toolCalls.length}`);
-      for (const tc of entry.data.toolCalls.slice(0, 5)) {
+      for (const tc of entry.data.toolCalls) {
         lines.push(`  {magenta-fg}${tc.name || 'unknown'}{/magenta-fg}`);
       }
     }

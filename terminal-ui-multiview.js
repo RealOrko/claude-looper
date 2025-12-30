@@ -91,6 +91,9 @@ export class TerminalUIMultiView {
     this.refreshInterval = null;
     this.autoRefresh = options.autoRefresh !== false;
 
+    // Panel focus state ('left' or 'right')
+    this.focusedPanel = 'left';
+
     // Initialize view components
     this.tasksView = new TasksView(this);
     this.communicationView = new CommunicationView(this);
@@ -167,12 +170,12 @@ export class TerminalUIMultiView {
       }
     });
 
-    // Main view panel (full width, changes based on active view)
-    this.widgets.mainPanel = blessed.box({
+    // Left panel (list view - tasks, prompts, events)
+    this.widgets.leftPanel = blessed.box({
       parent: this.screen,
       top: 1,
       left: 0,
-      right: 0,
+      width: '50%',
       bottom: 1,
       label: ' Tasks ',
       tags: true,
@@ -193,6 +196,34 @@ export class TerminalUIMultiView {
       },
       border: { type: 'line' },
       content: '{gray-fg}Loading...{/gray-fg}'
+    });
+
+    // Right panel (details view)
+    this.widgets.rightPanel = blessed.box({
+      parent: this.screen,
+      top: 1,
+      left: '50%',
+      right: 0,
+      bottom: 1,
+      label: ' Details ',
+      tags: true,
+      keys: true,
+      vi: true,
+      mouse: true,
+      scrollable: true,
+      alwaysScroll: true,
+      scrollbar: {
+        ch: '|',
+        track: { bg: 'black' },
+        style: { bg: 'cyan' }
+      },
+      style: {
+        fg: 'white',
+        border: { fg: 'gray' },
+        label: { fg: 'gray', bold: true }
+      },
+      border: { type: 'line' },
+      content: '{gray-fg}Select an item{/gray-fg}'
     });
 
     // Status bar (bottom, no border)
@@ -244,11 +275,32 @@ export class TerminalUIMultiView {
   _renderStatusBar() {
     const viewConfig = VIEW_CONFIG[this.currentView];
 
-    const helpText = '{gray-fg}Tab: Views  jk: Scroll  r: Refresh  q: Quit{/gray-fg}';
+    // Build context-aware help text
+    const focusedName = this.focusedPanel === 'left' ? 'List' : 'Details';
+    const scrollAction = this.focusedPanel === 'left' ? 'Navigate' : 'Scroll';
+
+    // Base shortcuts
+    let shortcuts = [
+      `{white-fg}Tab{/white-fg} Switch Panel`,
+      `{white-fg}1/2/3{/white-fg} Views`,
+      `{white-fg}j/k{/white-fg} ${scrollAction}`,
+      `{white-fg}r{/white-fg} Refresh`,
+      `{white-fg}q{/white-fg} Quit`
+    ];
+
+    // Add view-specific shortcuts
+    if (this.currentView === ViewTypes.COMMUNICATION) {
+      shortcuts.splice(3, 0, `{white-fg}a{/white-fg} Agent`, `{white-fg}t{/white-fg} Type`);
+    } else if (this.currentView === ViewTypes.EVENTS) {
+      shortcuts.splice(3, 0, `{white-fg}f{/white-fg} Filter`, `{white-fg}p{/white-fg} Priority`);
+    }
+
+    const helpText = `{gray-fg}${shortcuts.join('  ')}{/gray-fg}`;
+    const focusIndicator = `{cyan-fg}[${focusedName}]{/cyan-fg}`;
 
     // Blue bounded box for footer using box-drawing characters
     this.widgets.statusBar.setContent(
-      `{blue-fg}│{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}│{/blue-fg}  ${helpText}`
+      `{blue-fg}│{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}│{/blue-fg}  ${helpText}  ${focusIndicator}`
     );
   }
 
@@ -261,19 +313,22 @@ export class TerminalUIMultiView {
       this.destroy();
     });
 
-    // Tab to cycle views forward
+    // Tab to switch focus between left and right panels
     this.screen.key(['tab'], () => {
+      this.togglePanelFocus();
+    });
+
+    // Ctrl+Tab to cycle views forward
+    this.screen.key(['C-tab'], () => {
       const currentIndex = VIEW_ORDER.indexOf(this.currentView);
       const nextIndex = (currentIndex + 1) % VIEW_ORDER.length;
       this._switchToView(VIEW_ORDER[nextIndex]);
     });
 
-    // Shift+Tab to cycle views backward
-    this.screen.key(['S-tab'], () => {
-      const currentIndex = VIEW_ORDER.indexOf(this.currentView);
-      const prevIndex = (currentIndex - 1 + VIEW_ORDER.length) % VIEW_ORDER.length;
-      this._switchToView(VIEW_ORDER[prevIndex]);
-    });
+    // Number keys 1-3 to switch views directly
+    this.screen.key(['1'], () => this._switchToView(ViewTypes.TASKS));
+    this.screen.key(['2'], () => this._switchToView(ViewTypes.COMMUNICATION));
+    this.screen.key(['3'], () => this._switchToView(ViewTypes.EVENTS));
 
     // Refresh current view with full screen redraw
     this.screen.key(['r'], () => {
@@ -282,24 +337,38 @@ export class TerminalUIMultiView {
       this.screen.render();
     });
 
-    // j/k or arrow keys for navigation
+    // j/k or arrow keys for navigation (left panel) or scrolling (right panel)
     this.screen.key(['j', 'down'], () => {
-      if (this.currentView === ViewTypes.TASKS) {
-        this.tasksView.navigateDown();
-      } else if (this.currentView === ViewTypes.COMMUNICATION) {
-        this.communicationView.navigateDown();
-      } else if (this.currentView === ViewTypes.EVENTS) {
-        this.eventsView.navigateDown();
+      if (this.focusedPanel === 'left') {
+        // Left panel: navigate list items
+        if (this.currentView === ViewTypes.TASKS) {
+          this.tasksView.navigateDown();
+        } else if (this.currentView === ViewTypes.COMMUNICATION) {
+          this.communicationView.navigateDown();
+        } else if (this.currentView === ViewTypes.EVENTS) {
+          this.eventsView.navigateDown();
+        }
+      } else {
+        // Right panel: scroll details using blessed's scroll method
+        this.widgets.rightPanel.scroll(1);
+        this.screen.render();
       }
     });
 
     this.screen.key(['k', 'up'], () => {
-      if (this.currentView === ViewTypes.TASKS) {
-        this.tasksView.navigateUp();
-      } else if (this.currentView === ViewTypes.COMMUNICATION) {
-        this.communicationView.navigateUp();
-      } else if (this.currentView === ViewTypes.EVENTS) {
-        this.eventsView.navigateUp();
+      if (this.focusedPanel === 'left') {
+        // Left panel: navigate list items
+        if (this.currentView === ViewTypes.TASKS) {
+          this.tasksView.navigateUp();
+        } else if (this.currentView === ViewTypes.COMMUNICATION) {
+          this.communicationView.navigateUp();
+        } else if (this.currentView === ViewTypes.EVENTS) {
+          this.eventsView.navigateUp();
+        }
+      } else {
+        // Right panel: scroll details using blessed's scroll method
+        this.widgets.rightPanel.scroll(-1);
+        this.screen.render();
       }
     });
 
@@ -363,8 +432,8 @@ export class TerminalUIMultiView {
       }
     });
 
-    // Focus on main panel by default
-    this.widgets.mainPanel.focus();
+    // Focus on left panel by default
+    this.widgets.leftPanel.focus();
   }
 
   /**
@@ -373,27 +442,26 @@ export class TerminalUIMultiView {
   _switchToView(viewType) {
     if (!VIEW_CONFIG[viewType]) return;
 
-    // Save current scroll position
-    this.viewScrollPositions[this.currentView] = this.widgets.mainPanel.getScroll();
-
     // Switch view
     this.currentView = viewType;
     const config = VIEW_CONFIG[viewType];
 
-    // Clear the main panel content first to avoid artifacts
-    this.widgets.mainPanel.setContent('');
+    // Update panel labels
+    this.widgets.leftPanel.setLabel(` ${config.label} `);
+    this.widgets.rightPanel.setLabel(' Details ');
 
-    // Update panel label
-    this.widgets.mainPanel.setLabel(` ${config.description} `);
+    // Reset scroll positions for new view
+    this.widgets.leftPanel.childBase = 0;
+    this.widgets.leftPanel.childOffset = 0;
+    this.widgets.rightPanel.childBase = 0;
+    this.widgets.rightPanel.childOffset = 0;
+
+    // Reset focus to left panel
+    this.focusedPanel = 'left';
+    this._updatePanelFocusStyles();
 
     // Render the view content
     this._renderCurrentView();
-
-    // Restore scroll position for new view
-    const savedScroll = this.viewScrollPositions[viewType];
-    if (savedScroll > 0) {
-      this.widgets.mainPanel.setScroll(savedScroll);
-    }
 
     // Update tab bar and status
     this._renderTabBar();
@@ -433,36 +501,116 @@ export class TerminalUIMultiView {
   }
 
   /**
-   * Render the current view content
+   * Render the current view content to both panels
    */
   _renderCurrentView() {
-    const content = this.viewContent[this.currentView] || [];
-    // Clear before setting to avoid artifacts from previous content
-    this.widgets.mainPanel.setContent('');
-    this.widgets.mainPanel.setContent(content.join('\n'));
+    const content = this.viewContent[this.currentView] || { left: [], right: [] };
+    const leftPanel = this.widgets.leftPanel;
+    const rightPanel = this.widgets.rightPanel;
+
+    // Save scroll positions before setting content
+    const savedLeftScroll = leftPanel.childBase || 0;
+    const savedRightScroll = rightPanel.childBase || 0;
+
+    // Set content (this resets scroll)
+    leftPanel.setContent((content.left || []).join('\n'));
+    rightPanel.setContent((content.right || []).join('\n'));
+
+    // Restore scroll positions
+    leftPanel.childBase = savedLeftScroll;
+    leftPanel.childOffset = 0;
+    rightPanel.childBase = savedRightScroll;
+    rightPanel.childOffset = 0;
   }
 
   /**
-   * Scroll to ensure a specific line is visible in the main panel
+   * Scroll to ensure a specific line is visible in the left panel
    * @param {number} lineIndex - The line index to scroll into view
    */
   scrollToLine(lineIndex) {
-    if (!this.initialized || !this.widgets.mainPanel) return;
+    if (!this.initialized || !this.widgets.leftPanel) return;
 
-    const panel = this.widgets.mainPanel;
+    const panel = this.widgets.leftPanel;
     // Get visible height (subtract 2 for top/bottom borders)
     const visibleHeight = (panel.height || 20) - 2;
-    const currentScroll = panel.getScroll();
+    const currentScroll = panel.childBase || 0;
 
     // Calculate if the line is outside the visible area
     if (lineIndex < currentScroll) {
       // Line is above visible area - scroll up
-      panel.setScroll(lineIndex);
+      panel.childBase = lineIndex;
     } else if (lineIndex >= currentScroll + visibleHeight) {
       // Line is below visible area - scroll down
-      panel.setScroll(lineIndex - visibleHeight + 1);
+      panel.childBase = lineIndex - visibleHeight + 1;
     }
     // If line is already visible, don't scroll
+    panel.childOffset = 0;
+  }
+
+  /**
+   * Scroll the right panel to a specific line
+   * @param {number} lineIndex - The line index to scroll into view
+   */
+  scrollRightToLine(lineIndex) {
+    if (!this.initialized || !this.widgets.rightPanel) return;
+
+    const panel = this.widgets.rightPanel;
+    const visibleHeight = (panel.height || 20) - 2;
+    const currentScroll = panel.childBase || 0;
+
+    if (lineIndex < currentScroll) {
+      panel.childBase = lineIndex;
+    } else if (lineIndex >= currentScroll + visibleHeight) {
+      panel.childBase = lineIndex - visibleHeight + 1;
+    }
+    panel.childOffset = 0;
+  }
+
+  /**
+   * Toggle focus between left and right panels
+   */
+  togglePanelFocus() {
+    this.focusedPanel = this.focusedPanel === 'left' ? 'right' : 'left';
+
+    // Reset details panel scroll to top when switching focus
+    this.widgets.rightPanel.scrollTo(0);
+
+    this._updatePanelFocusStyles();
+    this._renderStatusBar();
+    this.screen.render();
+  }
+
+  /**
+   * Update panel border styles based on focus
+   */
+  _updatePanelFocusStyles() {
+    const leftPanel = this.widgets.leftPanel;
+    const rightPanel = this.widgets.rightPanel;
+
+    if (this.focusedPanel === 'left') {
+      leftPanel.style.border.fg = 'cyan';
+      leftPanel.style.label.fg = 'cyan';
+      leftPanel.style.scrollbar = { bg: 'cyan' };
+      rightPanel.style.border.fg = 'gray';
+      rightPanel.style.label.fg = 'gray';
+      rightPanel.style.scrollbar = { bg: 'gray' };
+      leftPanel.focus();
+    } else {
+      leftPanel.style.border.fg = 'gray';
+      leftPanel.style.label.fg = 'gray';
+      leftPanel.style.scrollbar = { bg: 'gray' };
+      rightPanel.style.border.fg = 'cyan';
+      rightPanel.style.label.fg = 'cyan';
+      rightPanel.style.scrollbar = { bg: 'cyan' };
+      rightPanel.focus();
+    }
+  }
+
+  /**
+   * Get the currently focused panel
+   */
+  getFocusedPanel() {
+    return this.focusedPanel === 'left' ? this.widgets.leftPanel : this.widgets.rightPanel;
   }
 
   // ============================================

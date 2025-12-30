@@ -48,13 +48,21 @@ function createMockUI() {
     currentTaskId: null,
     nextTaskId: null,
     widgets: {
-      mainPanel: { width: 100 }
+      leftPanel: { width: 50 },
+      rightPanel: { width: 50 }
     },
     screen: {
       render: () => {}
     },
     _renderCurrentView: () => {}
   };
+}
+
+// Helper to combine left and right content for testing
+function getContentString(result) {
+  const left = (result.left || []).join('\n');
+  const right = (result.right || []).join('\n');
+  return left + '\n' + right;
 }
 
 describe('TasksView - Initialization', () => {
@@ -103,7 +111,7 @@ describe('TasksView - Empty State', () => {
   it('should display empty state when no tasks', () => {
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('No tasks recorded'), 'Should show empty state message');
   });
 });
@@ -136,7 +144,7 @@ describe('TasksView - Task Display', () => {
 
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('Completed task'), 'Should show completed task');
     assert.ok(contentStr.includes('In progress task'), 'Should show in progress task');
     assert.ok(contentStr.includes('Pending task'), 'Should show pending task');
@@ -155,7 +163,7 @@ describe('TasksView - Task Display', () => {
 
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // Complexity is shown in the details panel for the selected task (first one)
     assert.ok(contentStr.includes('simple'), 'Should show simple for selected task');
   });
@@ -168,7 +176,7 @@ describe('TasksView - Task Display', () => {
 
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // Parent-child uses ASCII tree connectors
     assert.ok(contentStr.includes('|--') || contentStr.includes("'--"), 'Should show tree connector for parent-child');
   });
@@ -190,7 +198,7 @@ describe('TasksView - Task Display', () => {
     tasksView.taskGraphShowDetails = true;
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('Criteria:'), 'Should show criteria section');
     assert.ok(contentStr.includes('Test passes'), 'Should show criteria items');
   });
@@ -210,7 +218,7 @@ describe('TasksView - Task Display', () => {
 
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // All tasks should be present
     assert.ok(contentStr.includes('Task number 1'), 'Should show first task');
     assert.ok(contentStr.includes('Task number 12'), 'Should show last task');
@@ -356,8 +364,8 @@ describe('TasksView - Selected Task Details', () => {
     tasksView.taskGraphSelectedIndex = 0;
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
-    assert.ok(contentStr.includes('Details:'), 'Should show details header');
+    const contentStr = getContentString(content);
+    assert.ok(contentStr.includes('Status:'), 'Should show status label');
     assert.ok(contentStr.includes('in_progress'), 'Should show status');
     assert.ok(contentStr.includes('complex'), 'Should show complexity');
   });
@@ -372,7 +380,7 @@ describe('TasksView - Selected Task Details', () => {
     tasksView.taskGraphSelectedIndex = 0;
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     assert.ok(contentStr.includes('Subtasks'), 'Should show subtasks section');
     assert.ok(contentStr.includes('Subtask'), 'Should show subtask description');
   });
@@ -387,7 +395,7 @@ describe('TasksView - Selected Task Details', () => {
 
     const content = tasksView.refresh();
 
-    const contentStr = content.join('\n');
+    const contentStr = getContentString(content);
     // Current task uses * icon, next task uses > icon
     assert.ok(contentStr.includes('Current task'), 'Should show current task');
     assert.ok(contentStr.includes('Next task'), 'Should show next task');
