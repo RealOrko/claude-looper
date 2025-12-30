@@ -763,7 +763,13 @@ export class Orchestrator {
       }
 
       if (fix.testsPass) {
-        testResult = { status: 'passed', ...fix };
+        testResult = {
+          status: 'passed',
+          summary: fix.summary,
+          filesModified: fix.filesModified,
+          testsRun: fix.testsRun,
+          testsPass: fix.testsPass
+        };
         break;
       }
 
