@@ -36,7 +36,6 @@ You are the Supervisor agent. A task has failed and needs your decision on how t
 - Tasks completed: {{completedCount}} / {{totalCount}}
 - Tasks failed: {{failedCount}}
 - Replan depth: {{replanDepth}} / {{maxReplanDepth}}
-- Pivots used: {{pivotCount}} / {{maxPivots}}
 
 ## Instructions
 
@@ -56,15 +55,12 @@ Analyze the failure and decide:
    - Only recommend if attempts < 3 AND error seems temporary
    - Do NOT retry if same error occurred multiple times
 
-2. **REPLAN** - Task is too complex or poorly defined. Break into smaller subtasks.
+2. **REPLAN** - Task is too complex, poorly defined, or current approach isn't working. Break into smaller subtasks.
    - Good when task scope is too broad
    - Good when multiple independent steps are conflated
-
-3. **PIVOT** - Current approach is fundamentally flawed. Need different strategy.
-   - Suggest a specific alternative approach
    - Good when the approach keeps failing the same way
 
-4. **IMPOSSIBLE** - THIS {{#if task.parentTaskId}}SUBTASK{{else}}TASK{{/if}} cannot be achieved.
+3. **IMPOSSIBLE** - THIS {{#if task.parentTaskId}}SUBTASK{{else}}TASK{{/if}} cannot be achieved.
    - Explain what makes it impossible
    - Do NOT mark impossible just because it's difficult
    - Do NOT mark impossible because the overall goal seems hard
@@ -79,7 +75,6 @@ Consider:
 ## Output Format
 
 Call the `diagnosisComplete` tool with:
-- decision: "retry" | "replan" | "pivot" | "impossible"
+- decision: "retry" | "replan" | "impossible"
 - reasoning: Why you chose this decision (be specific about THIS {{#if task.parentTaskId}}SUBTASK{{else}}TASK{{/if}})
-- suggestion: (required if pivot) The different approach to try
 - blockers: (required if impossible) What specifically makes this impossible

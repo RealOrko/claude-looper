@@ -26,10 +26,8 @@ Claude Looper **runs autonomously** and **never gives up arbitrarily**. The only
 | Outcome | Description |
 |---------|-------------|
 | ✅ **Goal achieved** | Success! |
-| ❌ **Goal impossible** | All recovery options exhausted (retries, replans, pivots) |
+| ❌ **Goal impossible** | All recovery options exhausted (retries × replans) |
 | 🛑 **User abort** | Manual intervention |
-
-> **Note**: The system does not pause for clarification. If a task is ambiguous, it will try different approaches (PIVOT) until it succeeds or exhausts all options.
 
 ## 📋 Workflow Phases
 
@@ -51,6 +49,13 @@ Claude Looper **runs autonomously** and **never gives up arbitrarily**. The only
 │                    ⚡ EXECUTION LOOP                            │
 │                                                                │
 │  📋 Get next pending task                                      │
+│           │                                                    │
+│           ▼                                                    │
+│    ┌─────────────────────────────────────────────────────────┐ │
+│    │  Task complexity = medium/complex?                       │ │
+│    │      YES → 📋 REPLAN into subtasks (proactive)          │ │
+│    │      NO  → Continue to execution                        │ │
+│    └─────────────────────────────────────────────────────────┘ │
 │           │                                                    │
 │           ▼                                                    │
 │    ┌─────────────┐                                             │
@@ -80,13 +85,13 @@ Claude Looper **runs autonomously** and **never gives up arbitrarily**. The only
 │  ┌─────────────────────────────────────────────────────────┐   │
 │  │           👁️ SUPERVISOR DIAGNOSIS                        │   │
 │  │                                                          │   │
-│  │  ┌───────┐ ┌────────┐ ┌───────┐ ┌──────────┐            │   │
-│  │  │🔄RETRY│ │📋REPLAN│ │🔀PIVOT│ │❌IMPOSSIBLE│            │   │
-│  │  └───┬───┘ └───┬────┘ └───┬───┘ └─────┬────┘            │   │
-│  │      ▼         ▼          ▼           ▼                 │   │
-│  │   Reset to   Break      Fresh       Stop                │   │
-│  │   pending    subtasks   plan        execution           │   │
-│  │   (max 3)    (depth 3)  (max 3)                         │   │
+│  │  ┌───────┐ ┌────────┐ ┌──────────┐                      │   │
+│  │  │🔄RETRY│ │📋REPLAN│ │❌IMPOSSIBLE│                      │   │
+│  │  └───┬───┘ └───┬────┘ └─────┬────┘                      │   │
+│  │      ▼         ▼            ▼                           │   │
+│  │   Reset to   Break        Stop                          │   │
+│  │   pending    subtasks     execution                     │   │
+│  │   (max 3)    (max 3)                                    │   │
 │  └─────────────────────────────────────────────────────────┘   │
 │                            │                                   │
 │              Continue loop (unless stopped)                    │
@@ -135,7 +140,7 @@ The Supervisor evaluates work at each level against its **immediate parent**, no
 
 ## 🔒 Hard Escalation Limits
 
-The system enforces hard limits to prevent infinite loops:
+The system enforces hard limits to prevent infinite loops. **Clamp-down logic** ensures we always exhaust lower-level options before escalating:
 
 ```
 Task Fails
@@ -143,47 +148,54 @@ Task Fails
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │  attempts < maxStepAttempts (3)?                        │
-│     YES → Allow RETRY                                   │
+│     YES → RETRY (even if supervisor suggests otherwise) │
 │     NO  → Escalate to REPLAN                           │
 └─────────────────────────────────────────────────────────┘
     │
     ▼
 ┌─────────────────────────────────────────────────────────┐
 │  replanDepth < maxReplanDepth (5)?                      │
-│     YES → Allow REPLAN                                  │
-│     NO  → Escalate to PIVOT                            │
-└─────────────────────────────────────────────────────────┘
-    │
-    ▼
-┌─────────────────────────────────────────────────────────┐
-│  pivotCount < maxPivots (3)?                            │
-│     YES → Allow PIVOT                                   │
+│     YES → REPLAN (even if supervisor suggests otherwise)│
 │     NO  → Mark as IMPOSSIBLE                           │
 └─────────────────────────────────────────────────────────┘
 ```
 
+### Escalation Chain
+
+```
+RETRY (3x) → REPLAN (depth 1) → RETRY (3x) → REPLAN (depth 2) → ... → REPLAN (depth 5) → RETRY (3x) → IMPOSSIBLE
+```
+
 ### Maximum Attempts Before IMPOSSIBLE
 
-Worst case: **3 retries × 3 replan depths × 3 pivots = 27 task execution attempts**
-
-### Escalation Chain
+Worst case per task: **3 retries × 5 replan depths = 15 task execution attempts**
 
 | Exhausted | Escalates To |
 |-----------|--------------|
-| Retries (3) | REPLAN |
-| Replan depth (3) | PIVOT |
-| Pivots (3) | IMPOSSIBLE |
+| Retries (3) | REPLAN (break into subtasks) |
+| Replan depth (5) | IMPOSSIBLE |
+
+### Clamp-Down Rules
+
+The orchestrator **enforces** the escalation chain regardless of what the supervisor suggests:
+
+| Supervisor Says | Retries Left? | Replans Left? | Actual Action |
+|-----------------|---------------|---------------|---------------|
+| REPLAN | Yes | - | **RETRY** (clamped down) |
+| IMPOSSIBLE | Yes | - | **RETRY** (clamped down) |
+| IMPOSSIBLE | No | Yes | **REPLAN** (clamped down) |
+| RETRY | No | Yes | **REPLAN** (escalated up) |
+| REPLAN | No | No | **IMPOSSIBLE** (escalated up) |
 
 ## 🔍 Supervisor Diagnosis Decisions
 
 | Decision | When Used | Action |
 |----------|-----------|--------|
-| 🔄 **RETRY** | Transient error (network, timing) | Reset task, try again |
-| 📋 **REPLAN** | Task too complex | Break into subtasks |
-| 🔀 **PIVOT** | Approach is wrong | Fresh plan, new strategy |
+| 🔄 **RETRY** | Transient error, minor fix needed | Reset task to pending, try again |
+| 📋 **REPLAN** | Task too complex, needs breakdown | Create subtasks |
 | ❌ **IMPOSSIBLE** | Task cannot be achieved | Stop with explanation |
 
-> **Note**: The system runs autonomously. If the LLM suggests CLARIFY, it's converted to PIVOT (try different approach) until pivots are exhausted, then IMPOSSIBLE.
+> **Note**: The supervisor provides recommendations, but the orchestrator enforces the escalation chain. The supervisor cannot skip retry attempts or jump to impossible.
 
 ### 📊 Diagnosis Context
 
@@ -194,7 +206,6 @@ The Supervisor receives:
 - 📜 Complete attempt history
 - 📊 Current state (completed/failed/pending)
 - 🌳 Replan depth and max
-- 🔀 Pivot count and max
 
 ## 🔀 State Transitions
 
@@ -205,9 +216,16 @@ The Supervisor receives:
                                 └──▶ ❌ FAILED ──▶ (diagnosis decides)
                                           │
                                           ├──▶ ⏳ PENDING (retry)
-                                          ├──▶ 🚫 BLOCKED (replan)
-                                          └──▶ 🔀 (pivot - new tasks)
+                                          └──▶ 🚫 BLOCKED (replan into subtasks)
 ```
+
+### Blocked State
+
+A task enters BLOCKED state when it is replanned into subtasks:
+- The parent task is marked BLOCKED
+- Subtasks are created as PENDING
+- When ALL subtasks complete, parent transitions to COMPLETED
+- Orphaned blocked tasks (no subtasks) are reset to PENDING on resume
 
 ### Execution States
 ```
@@ -224,8 +242,7 @@ The Supervisor receives:
 | `maxStepAttempts` | 3 | Retry attempts per task before escalating to REPLAN |
 | `maxFixCycles` | 3 | Fix attempts per task within coder/tester loop |
 | `maxPlanRevisions` | 3 | Plan revision attempts |
-| `maxReplanDepth` | 5 | Max subtask nesting before escalating to PIVOT |
-| `maxPivots` | 3 | Fresh plan attempts before marking IMPOSSIBLE |
+| `maxReplanDepth` | 5 | Max subtask recursion depth before marking IMPOSSIBLE |
 | `timeLimit` | 2h | Max execution time |
 | `approval threshold` | 70 | Min score to approve |
 
@@ -255,6 +272,11 @@ State snapshots after each task enable resume from:
 - ⏸️ Paused executions (waiting for input)
 - 🔌 Interrupted sessions
 
+On resume:
+- Failed and in-progress tasks are reset to pending
+- Orphaned blocked tasks (no subtasks) are reset to pending
+- Blocked tasks with subtasks continue execution of subtasks
+
 ## 📖 Example Flow
 
 ```
@@ -268,12 +290,35 @@ State snapshots after each task enable resume from:
 3️⃣ 💻 CODER "Create User model" ──▶ 🧪 TESTER fails
    └── 🔧 FIX: CODER fixes ──▶ 🧪 passes ──▶ ✅
 
-4️⃣ 💻 CODER "Add login endpoint" ──▶ 🧪 TESTER fails (3x)
-   └── 👁️ SUPERVISOR: "📋 REPLAN - too complex"
-   └── 📝 PLANNER creates subtasks: [Add route, Add validation, Add session]
-   └── Each subtask ──▶ ✅
+4️⃣ 💻 CODER "Add login endpoint" (complexity: medium)
+   └── 📋 PROACTIVE REPLAN: Break into subtasks
+   └── Subtasks: [Add route, Add validation, Add session]
+   └── Each subtask ──▶ ✅ (retried if needed)
+   └── Parent task ──▶ ✅
 
 5️⃣ 💻 CODER "Add tests" ──▶ 🧪 TESTER passes ──▶ ✅
 
 6️⃣ 👁️ SUPERVISOR verifies goal ──▶ ✅ SUCCESS
+```
+
+### Failure Example
+
+```
+🎯 Goal: "Implement impossible feature"
+
+1️⃣ 📝 PLANNER creates task: [Implement X]
+
+2️⃣ 💻 CODER "Implement X" ──▶ 🧪 TESTER fails
+   └── 🔄 RETRY 1, 2, 3 ──▶ fails (retries exhausted)
+   └── 📋 REPLAN depth 1 ──▶ subtasks created
+       └── Subtask fails after 3 retries
+       └── 📋 REPLAN depth 2 ──▶ subtasks created
+           └── Subtask fails after 3 retries
+           └── 📋 REPLAN depth 3 ──▶ subtasks created
+               └── Subtask fails after 3 retries
+               └── 📋 REPLAN depth 4 ──▶ subtasks created
+                   └── Subtask fails after 3 retries
+                   └── 📋 REPLAN depth 5 ──▶ subtasks created
+                       └── Subtask fails after 3 retries
+                       └── ❌ IMPOSSIBLE (depth 5 exhausted)
 ```

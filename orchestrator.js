@@ -73,9 +73,6 @@ export class Orchestrator {
     // Track attempt history per task for diagnosis
     this.taskAttempts = new Map();
 
-    // Track pivot count for the current goal
-    this.pivotCount = 0;
-
     // Periodic snapshot interval (null when not running)
     this.snapshotInterval = null;
     this.snapshotIntervalMs = options.snapshotIntervalMs || 60000; // Default 60 seconds
@@ -342,12 +339,6 @@ export class Orchestrator {
       this._log(`[Orchestrator] Restored attempt history for ${this.taskAttempts.size} tasks`);
     }
 
-    // Restore pivot count
-    if (state.pivotCount !== undefined) {
-      this.pivotCount = state.pivotCount;
-      this._log(`[Orchestrator] Restored pivot count: ${this.pivotCount}`);
-    }
-
     // Initialize agents - need to handle already-registered agents
     this._initializeAgentsForResume();
 
@@ -357,7 +348,7 @@ export class Orchestrator {
       // The agent.tasks reference already points to agentCore.agents['planner'].tasks
       // which was restored by loadSnapshot(), so we just need to set currentPlan
 
-      // Find the goal - prefer active goal, fall back to first goal
+      const tasks = plannerState.tasks || [];
       const activeGoal = plannerState.goals?.find(g => g.status === 'active');
       const goal = activeGoal || plannerState.goals?.[0];
 
@@ -365,18 +356,18 @@ export class Orchestrator {
         this.agents.planner.currentPlan = {
           goalId: goal.id,
           goal: this.goal,
-          tasks: plannerState.tasks || [],
+          tasks: tasks,
           createdAt: state.timestamp
         };
         this._log(`[Orchestrator] Restored plan with goalId: ${goal.id}`);
-      } else if (plannerState.tasks?.length > 0) {
+      } else if (tasks.length > 0) {
         // No goal found but we have tasks - use the first task's parentGoalId
-        const firstTask = plannerState.tasks[0];
+        const firstTask = tasks[0];
         const goalId = firstTask?.parentGoalId || `goal-resumed-${Date.now()}`;
         this.agents.planner.currentPlan = {
           goalId,
           goal: this.goal,
-          tasks: plannerState.tasks,
+          tasks: tasks,
           createdAt: state.timestamp
         };
         this._log(`[Orchestrator] Restored plan using task's parentGoalId: ${goalId}`);
@@ -385,9 +376,11 @@ export class Orchestrator {
       }
     }
 
-    // Reset failed and in-progress tasks for retry
-    const resetCount = agentCore.resetFailedTasks('planner');
-    this._log(`[Orchestrator] Reset ${resetCount} failed/in-progress tasks for retry`);
+    // Reset failed, in-progress, and orphaned blocked tasks for retry
+    const resetResult = agentCore.resetFailedTasks('planner');
+    if (resetResult.resetCount > 0 || resetResult.blockedReset > 0) {
+      this._log(`[Orchestrator] Reset ${resetResult.resetCount} failed/in-progress tasks, ${resetResult.blockedReset} orphaned blocked tasks`);
+    }
 
     this.status = EXECUTION_STATUS.RUNNING;
     this._startPeriodicSnapshots();
@@ -605,6 +598,16 @@ export class Orchestrator {
 
   /**
    * Diagnose a failed task and handle the decision
+   *
+   * Simplified escalation chain: RETRY -> REPLAN -> IMPOSSIBLE
+   * - Retry up to maxStepAttempts (3) times per replan level
+   * - Replan up to maxReplanDepth (3) levels deep
+   * - Then mark as IMPOSSIBLE
+   *
+   * Clamp-down logic ensures we always exhaust lower-level options before escalating:
+   * - Must exhaust retries before replanning
+   * - Must exhaust replans before marking impossible
+   *
    * @returns {object} { stop: boolean, reason?: string }
    */
   async _diagnoseAndHandle(task) {
@@ -614,42 +617,49 @@ export class Orchestrator {
     // Calculate hard limits
     const maxAttempts = this.config.execution.maxStepAttempts || 3;
     const maxReplanDepth = this.config.planner?.settings?.maxReplanDepth || 3;
-    const maxPivots = this.config.execution.maxPivots || 3;
     const retriesExhausted = attempts.length >= maxAttempts;
     const replanDepthExhausted = state.replanDepth >= maxReplanDepth;
-    const pivotsExhausted = this.pivotCount >= maxPivots;
 
+    // Get diagnosis from supervisor for reasoning/feedback (but we enforce escalation rules)
     const diagnosis = await this.agents.supervisor.diagnose({
       goal: this.goal,
       task,
       parentTask: this._getParentTask(task),  // Hierarchical context
       attempts,
-      ...state,
-      pivotCount: this.pivotCount,
-      maxPivots
+      ...state
     });
 
     this._log(`[Orchestrator] Diagnosis: ${diagnosis.decision} - ${diagnosis.reasoning}`);
 
-    // Determine effective decision with hard limit enforcement
-    // Escalation chain: RETRY -> REPLAN -> PIVOT -> IMPOSSIBLE
+    // Determine effective decision with CLAMP-DOWN enforcement
+    // Escalation chain: RETRY -> REPLAN -> IMPOSSIBLE
+    // We enforce minimum thresholds - can't skip steps even if supervisor suggests it
     let effectiveDecision = diagnosis.decision;
 
-    // Enforce retry limit: escalate RETRY to REPLAN if retries exhausted
-    if (effectiveDecision === DIAGNOSIS_DECISIONS.RETRY && retriesExhausted) {
-      this._log(`[Orchestrator] RETRY blocked: ${attempts.length} attempts >= max ${maxAttempts}. Escalating to REPLAN.`);
+    // CLAMP DOWN: Must exhaust retries before allowing replan or impossible
+    if (!retriesExhausted &&
+        (effectiveDecision === DIAGNOSIS_DECISIONS.REPLAN ||
+         effectiveDecision === DIAGNOSIS_DECISIONS.IMPOSSIBLE)) {
+      this._log(`[Orchestrator] Clamping ${effectiveDecision} → RETRY: only ${attempts.length}/${maxAttempts} attempts used`);
+      effectiveDecision = DIAGNOSIS_DECISIONS.RETRY;
+    }
+
+    // CLAMP DOWN: Must exhaust replans before allowing impossible
+    if (retriesExhausted && !replanDepthExhausted &&
+        effectiveDecision === DIAGNOSIS_DECISIONS.IMPOSSIBLE) {
+      this._log(`[Orchestrator] Clamping IMPOSSIBLE → REPLAN: only depth ${state.replanDepth}/${maxReplanDepth} used`);
       effectiveDecision = DIAGNOSIS_DECISIONS.REPLAN;
     }
 
-    // Enforce replan depth limit: escalate REPLAN to PIVOT if depth exhausted
-    if (effectiveDecision === DIAGNOSIS_DECISIONS.REPLAN && replanDepthExhausted) {
-      this._log(`[Orchestrator] REPLAN blocked: depth ${state.replanDepth} >= max ${maxReplanDepth}. Escalating to PIVOT.`);
-      effectiveDecision = DIAGNOSIS_DECISIONS.PIVOT;
+    // ESCALATE UP: If retries exhausted, escalate RETRY to REPLAN
+    if (effectiveDecision === DIAGNOSIS_DECISIONS.RETRY && retriesExhausted) {
+      this._log(`[Orchestrator] RETRY exhausted: ${attempts.length} attempts >= max ${maxAttempts}. Escalating to REPLAN.`);
+      effectiveDecision = DIAGNOSIS_DECISIONS.REPLAN;
     }
 
-    // Enforce pivot limit: escalate PIVOT to IMPOSSIBLE if pivots exhausted
-    if (effectiveDecision === DIAGNOSIS_DECISIONS.PIVOT && pivotsExhausted) {
-      this._log(`[Orchestrator] PIVOT blocked: ${this.pivotCount} pivots >= max ${maxPivots}. Escalating to IMPOSSIBLE.`);
+    // ESCALATE UP: If replans exhausted, escalate REPLAN to IMPOSSIBLE
+    if (effectiveDecision === DIAGNOSIS_DECISIONS.REPLAN && replanDepthExhausted) {
+      this._log(`[Orchestrator] REPLAN exhausted: depth ${state.replanDepth} >= max ${maxReplanDepth}. Escalating to IMPOSSIBLE.`);
       effectiveDecision = DIAGNOSIS_DECISIONS.IMPOSSIBLE;
     }
 
@@ -666,97 +676,29 @@ export class Orchestrator {
         await this.agents.planner.replan(task, diagnosis.reasoning);
         return { stop: false };
 
-      case DIAGNOSIS_DECISIONS.PIVOT:
-        // Create a fresh plan with a different approach
-        this.pivotCount++;
-        this._log(`[Orchestrator] Pivoting to new approach (pivot ${this.pivotCount}/${maxPivots}): ${diagnosis.suggestion}`);
-        await this._pivot(diagnosis.suggestion);
-        return { stop: false };
-
-      case DIAGNOSIS_DECISIONS.CLARIFY:
-        // LLM requested clarification - but we want autonomous operation
-        // Treat as a signal to try a different approach (pivot) if possible
-        if (!pivotsExhausted) {
-          this.pivotCount++;
-          this._log(`[Orchestrator] CLARIFY requested but running autonomously. Pivoting instead (pivot ${this.pivotCount}/${maxPivots})`);
-          await this._pivot(diagnosis.clarification || 'Try alternative approach');
-          return { stop: false };
-        }
-        // Fall through to IMPOSSIBLE if pivots exhausted
-        this._log(`[Orchestrator] CLARIFY requested but pivots exhausted. Marking as IMPOSSIBLE.`);
-        return { stop: true, reason: `Task impossible: ${diagnosis.clarification || 'No viable approach found'}` };
-
       case DIAGNOSIS_DECISIONS.IMPOSSIBLE:
-        // Goal cannot be achieved
+        // Task cannot be achieved - all recovery options exhausted
         const blockers = diagnosis.blockers?.join(', ') ||
-          `Exhausted all recovery options (${attempts.length} retries, depth ${state.replanDepth} replans, ${this.pivotCount} pivots)`;
+          `Exhausted all recovery options (${attempts.length} retries, depth ${state.replanDepth} replans)`;
         this._log(`[Orchestrator] Task impossible: ${blockers}`);
         return { stop: true, reason: `Task impossible: ${blockers}` };
 
       default:
-        // Unknown decision - default to replan with escalation
-        this._log(`[Orchestrator] Unknown diagnosis decision: ${diagnosis.decision}, defaulting to replan`);
-        if (replanDepthExhausted) {
-          if (!pivotsExhausted) {
-            this.pivotCount++;
-            this._log(`[Orchestrator] Replan depth exhausted, pivoting instead (pivot ${this.pivotCount}/${maxPivots})`);
-            await this._pivot(diagnosis.reasoning || 'Try alternative approach');
-            return { stop: false };
-          }
-          this._log(`[Orchestrator] All recovery options exhausted. Marking as IMPOSSIBLE.`);
-          return { stop: true, reason: 'Exhausted all recovery options' };
+        // Unknown decision - apply clamp-down logic
+        this._log(`[Orchestrator] Unknown diagnosis decision: ${diagnosis.decision}, applying escalation rules`);
+        if (!retriesExhausted) {
+          this._log(`[Orchestrator] Defaulting to RETRY (${attempts.length + 1}/${maxAttempts})`);
+          agentCore.updateTask('planner', task.id, { status: 'pending' });
+          return { stop: false };
         }
-        await this.agents.planner.replan(task, diagnosis.reasoning);
-        return { stop: false };
+        if (!replanDepthExhausted) {
+          this._log(`[Orchestrator] Defaulting to REPLAN (depth ${state.replanDepth + 1}/${maxReplanDepth})`);
+          await this.agents.planner.replan(task, diagnosis.reasoning);
+          return { stop: false };
+        }
+        this._log(`[Orchestrator] All recovery options exhausted. Marking as IMPOSSIBLE.`);
+        return { stop: true, reason: 'Exhausted all recovery options' };
     }
-  }
-
-  /**
-   * Pivot to a new approach by creating a fresh plan
-   */
-  async _pivot(suggestion) {
-    // Mark all pending/failed tasks as blocked (they're from the old approach)
-    const goalId = this.agents.planner.currentPlan?.goalId;
-    const tasks = this.agents.planner.agent.tasks.filter(
-      t => t.parentGoalId === goalId && (t.status === 'pending' || t.status === 'failed')
-    );
-
-    for (const task of tasks) {
-      agentCore.updateTask('planner', task.id, {
-        status: 'blocked',
-        metadata: { ...task.metadata, blockedReason: 'Pivot to new approach' }
-      });
-    }
-
-    // Create a fresh plan with the suggested approach
-    const newPlan = await this.agents.planner.createPlan(this.goal, {
-      previousAttempts: this._summarizeAttempts(),
-      suggestedApproach: suggestion,
-      instruction: 'Previous approaches failed. Try this different strategy.'
-    });
-
-    this._log(`[Orchestrator] Pivot created ${newPlan.tasks.length} new tasks`);
-  }
-
-  /**
-   * Summarize all attempts for context in pivot
-   */
-  _summarizeAttempts() {
-    const summary = [];
-    for (const [taskId, attempts] of this.taskAttempts.entries()) {
-      const task = this.agents.planner.agent.tasks.find(t => t.id === taskId);
-      if (task && attempts.length > 0) {
-        summary.push({
-          task: task.description,
-          attempts: attempts.map(a => ({
-            approach: a.approach,
-            result: a.result,
-            error: a.error
-          }))
-        });
-      }
-    }
-    return summary;
   }
 
   /**
@@ -1073,8 +1015,7 @@ export class Orchestrator {
     agentCore.snapshot({
       executorSessions: agentExecutor.sessions,
       currentPhase: this.currentPhase,
-      taskAttempts: taskAttemptsObj,
-      pivotCount: this.pivotCount
+      taskAttempts: taskAttemptsObj
     });
   }
 

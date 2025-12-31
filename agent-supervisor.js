@@ -38,13 +38,11 @@ const VERIFICATION_TYPES = {
   PROGRESS: 'progress'
 };
 
-// Diagnosis decisions
+// Diagnosis decisions (simplified: no PIVOT - just retry, replan, or impossible)
 const DIAGNOSIS_DECISIONS = {
   RETRY: 'retry',
   REPLAN: 'replan',
-  PIVOT: 'pivot',
-  IMPOSSIBLE: 'impossible',
-  CLARIFY: 'clarify'
+  IMPOSSIBLE: 'impossible'
 };
 
 // Tool definitions for structured responses
@@ -375,11 +373,9 @@ export class SupervisorAgent {
               properties: {
                 decision: {
                   type: 'string',
-                  enum: ['retry', 'replan', 'pivot', 'impossible', 'clarify']
+                  enum: ['retry', 'replan', 'impossible']
                 },
                 reasoning: { type: 'string' },
-                suggestion: { type: 'string' },
-                clarification: { type: 'string' },
                 blockers: { type: 'array', items: { type: 'string' } }
               },
               required: ['decision', 'reasoning']
@@ -449,19 +445,14 @@ export class SupervisorAgent {
 
     if (lowerResponse.includes('retry') || lowerResponse.includes('try again')) {
       decision = DIAGNOSIS_DECISIONS.RETRY;
-    } else if (lowerResponse.includes('pivot') || lowerResponse.includes('different approach')) {
-      decision = DIAGNOSIS_DECISIONS.PIVOT;
     } else if (lowerResponse.includes('impossible') || lowerResponse.includes('cannot be achieved')) {
       decision = DIAGNOSIS_DECISIONS.IMPOSSIBLE;
-    } else if (lowerResponse.includes('clarif') || lowerResponse.includes('need more information')) {
-      decision = DIAGNOSIS_DECISIONS.CLARIFY;
     }
+    // Note: 'pivot', 'clarify', 'different approach' all default to REPLAN
 
     return {
       decision,
       reasoning: response.substring(0, 500),
-      suggestion: decision === DIAGNOSIS_DECISIONS.PIVOT ? 'See reasoning for suggested approach' : undefined,
-      clarification: decision === DIAGNOSIS_DECISIONS.CLARIFY ? 'See reasoning for question' : undefined,
       blockers: decision === DIAGNOSIS_DECISIONS.IMPOSSIBLE ? ['See reasoning for blockers'] : undefined
     };
   }

@@ -666,9 +666,10 @@ describe('SupervisorAgent - Diagnosis Constants', () => {
   it('should export DIAGNOSIS_DECISIONS constants', () => {
     assert.strictEqual(DIAGNOSIS_DECISIONS.RETRY, 'retry');
     assert.strictEqual(DIAGNOSIS_DECISIONS.REPLAN, 'replan');
-    assert.strictEqual(DIAGNOSIS_DECISIONS.PIVOT, 'pivot');
     assert.strictEqual(DIAGNOSIS_DECISIONS.IMPOSSIBLE, 'impossible');
-    assert.strictEqual(DIAGNOSIS_DECISIONS.CLARIFY, 'clarify');
+    // PIVOT and CLARIFY removed - simplified to retry/replan/impossible only
+    assert.strictEqual(DIAGNOSIS_DECISIONS.PIVOT, undefined);
+    assert.strictEqual(DIAGNOSIS_DECISIONS.CLARIFY, undefined);
   });
 });
 
@@ -688,8 +689,6 @@ describe('SupervisorAgent - Diagnosis Result Parsing', () => {
           arguments: {
             decision: 'replan',
             reasoning: 'Task is too complex',
-            suggestion: null,
-            clarification: null,
             blockers: null
           }
         }
@@ -708,9 +707,8 @@ describe('SupervisorAgent - Diagnosis Result Parsing', () => {
         {
           name: 'diagnosisComplete',
           arguments: {
-            decision: 'pivot',
-            reasoning: 'Wrong approach',
-            suggestion: 'Try a different strategy'
+            decision: 'replan',
+            reasoning: 'Task needs to be broken down'
           }
         }
       ]
@@ -718,8 +716,8 @@ describe('SupervisorAgent - Diagnosis Result Parsing', () => {
 
     const parsed = supervisor._parseDiagnosisResult(result);
 
-    assert.strictEqual(parsed.decision, 'pivot');
-    assert.strictEqual(parsed.suggestion, 'Try a different strategy');
+    assert.strictEqual(parsed.decision, 'replan');
+    assert.strictEqual(parsed.reasoning, 'Task needs to be broken down');
   });
 
   it('should parse impossible diagnosis with blockers', () => {
@@ -742,15 +740,14 @@ describe('SupervisorAgent - Diagnosis Result Parsing', () => {
     assert.deepStrictEqual(parsed.blockers, ['Missing API', 'No permissions']);
   });
 
-  it('should parse clarify diagnosis with question', () => {
+  it('should parse retry diagnosis', () => {
     const result = {
       structuredOutput: {
         toolCall: {
           name: 'diagnosisComplete',
           arguments: {
-            decision: 'clarify',
-            reasoning: 'Ambiguous requirements',
-            clarification: 'Should the API be REST or GraphQL?'
+            decision: 'retry',
+            reasoning: 'Transient network error'
           }
         }
       }
@@ -758,8 +755,8 @@ describe('SupervisorAgent - Diagnosis Result Parsing', () => {
 
     const parsed = supervisor._parseDiagnosisResult(result);
 
-    assert.strictEqual(parsed.decision, 'clarify');
-    assert.strictEqual(parsed.clarification, 'Should the API be REST or GraphQL?');
+    assert.strictEqual(parsed.decision, 'retry');
+    assert.strictEqual(parsed.reasoning, 'Transient network error');
   });
 });
 
@@ -778,11 +775,12 @@ describe('SupervisorAgent - Text Diagnosis Parsing', () => {
     assert.strictEqual(parsed.decision, 'retry');
   });
 
-  it('should detect pivot from text', () => {
+  it('should default to replan for different approach text (pivot removed)', () => {
+    // Previously this would return 'pivot', now defaults to 'replan'
     const response = 'We need a different approach to solve this problem';
     const parsed = supervisor._parseTextDiagnosis(response);
 
-    assert.strictEqual(parsed.decision, 'pivot');
+    assert.strictEqual(parsed.decision, 'replan');
   });
 
   it('should detect impossible from text', () => {
@@ -792,11 +790,12 @@ describe('SupervisorAgent - Text Diagnosis Parsing', () => {
     assert.strictEqual(parsed.decision, 'impossible');
   });
 
-  it('should detect clarify from text', () => {
+  it('should default to replan for clarification text (clarify removed)', () => {
+    // Previously this would return 'clarify', now defaults to 'replan'
     const response = 'We need more information and clarification on requirements';
     const parsed = supervisor._parseTextDiagnosis(response);
 
-    assert.strictEqual(parsed.decision, 'clarify');
+    assert.strictEqual(parsed.decision, 'replan');
   });
 
   it('should default to replan when no clear decision', () => {

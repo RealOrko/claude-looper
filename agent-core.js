@@ -1139,23 +1139,42 @@ class AgentCore extends EventEmitter {
   }
 
   /**
-   * Reset failed and in-progress tasks to pending for retry.
+   * Reset failed, in-progress, and orphaned blocked tasks to pending for retry.
    * Also re-activates the workflow.
    *
+   * Blocked tasks are reset only if they have no subtasks (orphaned).
+   * Blocked tasks WITH subtasks are left blocked - their subtasks will be executed.
+   *
    * @param {string} [agentName='planner'] - Agent whose tasks to reset
-   * @returns {number} Number of tasks that were reset
+   * @returns {object} { resetCount: number, blockedReset: number }
    */
   resetFailedTasks(agentName = 'planner') {
     const agent = this.agents[agentName];
-    if (!agent) return 0;
+    if (!agent) return { resetCount: 0, blockedReset: 0 };
 
     let resetCount = 0;
+    let blockedReset = 0;
+
     for (const task of agent.tasks) {
+      // Reset failed and in-progress tasks
       if (task.status === 'failed' || task.status === 'in_progress') {
         task.status = 'pending';
         task.attempts = 0;
         task.updatedAt = Date.now();
         resetCount++;
+      }
+
+      // Reset orphaned blocked tasks (blocked with no subtasks)
+      // These were likely blocked by the old pivot logic and should be retried
+      if (task.status === 'blocked' && (!task.subtasks || task.subtasks.length === 0)) {
+        task.status = 'pending';
+        task.attempts = 0;
+        task.updatedAt = Date.now();
+        // Clear any old blocked reason
+        if (task.metadata) {
+          delete task.metadata.blockedReason;
+        }
+        blockedReset++;
       }
     }
 
@@ -1164,7 +1183,7 @@ class AgentCore extends EventEmitter {
     this.workflow.status = 'running';
     this.workflow.endTime = null;
 
-    return resetCount;
+    return { resetCount, blockedReset };
   }
 
   /**

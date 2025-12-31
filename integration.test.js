@@ -559,13 +559,14 @@ describe('Integration - Resume Functionality', () => {
       agentCore.updateTask('planner', tasks[0].id, { status: 'failed' });
     }
 
-    // Reset failed tasks
-    const resetCount = agentCore.resetFailedTasks('planner');
+    // Reset failed tasks (now returns object with resetCount and blockedReset)
+    const resetResult = agentCore.resetFailedTasks('planner');
 
     // Verify task was reset
     const updatedTasks = agentCore.getAgent('planner').tasks;
     const pendingTasks = updatedTasks.filter(t => t.status === 'pending');
-    assert.ok(resetCount >= 0);
+    assert.ok(resetResult.resetCount >= 0);
+    assert.ok(resetResult.blockedReset >= 0);
   });
 
   it('should continue from last task on resume', async () => {
