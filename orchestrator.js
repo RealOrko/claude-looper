@@ -519,34 +519,35 @@ export class Orchestrator {
 
     // Loop until all tasks are complete or supervisor says to stop
     while (true) {
-      // Get next pending task
-      let task = this.agents.planner.getNextTask();
+      const goalId = this.agents.planner.currentPlan?.goalId;
 
-      if (!task) {
-        // No pending tasks - check if there are failed tasks to diagnose
-        const goalId = this.agents.planner.currentPlan?.goalId;
-        const failedTasks = this.agents.planner.agent.tasks.filter(
-          t => t.status === 'failed' && t.parentGoalId === goalId
-        );
+      // Check for failed tasks FIRST - must handle failures before moving to siblings
+      // This ensures retry logic (maxStepAttempts) is respected before proceeding
+      const failedTasks = this.agents.planner.agent.tasks.filter(
+        t => t.status === 'failed' && t.parentGoalId === goalId
+      );
 
-        if (failedTasks.length === 0) {
-          this._log(`[Orchestrator] All tasks completed`);
-          break;
-        }
+      if (failedTasks.length > 0) {
+        const failedTask = failedTasks[0];
+        this._log(`[Orchestrator] Diagnosing failed task: ${failedTask.description}`);
 
-        // Diagnose the first failed task
-        task = failedTasks[0];
-        this._log(`[Orchestrator] Diagnosing failed task: ${task.description}`);
-
-        const diagnosis = await this._diagnoseAndHandle(task);
+        const diagnosis = await this._diagnoseAndHandle(failedTask);
 
         if (diagnosis.stop) {
           this._log(`[Orchestrator] Stopping: ${diagnosis.reason}`);
           break;
         }
 
-        // Continue the loop - diagnosis may have created new tasks or reset the failed one
+        // Continue the loop - diagnosis may have reset task to pending or created subtasks
         continue;
+      }
+
+      // Get next pending task
+      let task = this.agents.planner.getNextTask();
+
+      if (!task) {
+        this._log(`[Orchestrator] All tasks completed`);
+        break;
       }
 
       // Proactively break down complex and medium tasks before executing
