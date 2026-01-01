@@ -78,6 +78,31 @@ export function sanitizeText(text) {
 }
 
 /**
+ * Escape curly braces for blessed tag parsing
+ * Converts { to {open} and } to {close} so blessed doesn't interpret them as tags
+ * @param {string} text - Text to escape
+ * @returns {string} Escaped text
+ */
+export function escapeBlessedTags(text) {
+  if (!text) return '';
+  // Use a single-pass replacement to avoid corrupting escape sequences
+  // We use placeholder tokens, then convert them
+  return text.replace(/[{}]/g, (match) => {
+    return match === '{' ? '{open}' : '{close}';
+  });
+}
+
+/**
+ * Sanitize and escape text for safe blessed rendering
+ * @param {string} text - Text to sanitize and escape
+ * @returns {string} Safe text for blessed
+ */
+export function sanitizeForBlessed(text) {
+  if (!text) return '';
+  return escapeBlessedTags(sanitizeText(text));
+}
+
+/**
  * Strip blessed tags from text for accurate width calculation
  * @param {string} text - Text with blessed tags
  * @returns {string} Text without tags

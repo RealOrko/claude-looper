@@ -10,7 +10,8 @@ import {
   truncateWithTags,
   formatTimestamp,
   getAgentColor,
-  getContentWidth
+  getContentWidth,
+  sanitizeForBlessed
 } from './terminal-ui-utils.js';
 
 /**
@@ -143,7 +144,7 @@ export class CommunicationView {
       const realIndex = filtered.length - 1 - i;
       const isSelected = realIndex === this.commSelectedIndex;
       const time = formatTimestamp(entry.timestamp);
-      const agent = entry.agentName || entry.data?.agentName || '?';
+      const agent = sanitizeForBlessed(entry.agentName || entry.data?.agentName || '?');
       const type = this._getCommTypeLabel(entry.entryType);
       const desc = truncate(this._getCommPreview(entry), leftWidth - 25);
       // Use bold for selection (same style as task tree)
@@ -183,9 +184,9 @@ export class CommunicationView {
    * Get communication preview text
    */
   _getCommPreview(entry) {
-    if (entry.data?.content) return entry.data.content;
-    if (entry.data?.toolName) return entry.data.toolName;
-    if (entry.data?.phase) return entry.data.phase;
+    if (entry.data?.content) return sanitizeForBlessed(entry.data.content);
+    if (entry.data?.toolName) return sanitizeForBlessed(entry.data.toolName);
+    if (entry.data?.phase) return sanitizeForBlessed(entry.data.phase);
     return '';
   }
 
@@ -194,7 +195,7 @@ export class CommunicationView {
    */
   _renderCommDetails(lines, entry, width) {
     const time = formatTimestamp(entry.timestamp);
-    const agent = entry.agentName || entry.data?.agentName || 'unknown';
+    const agent = sanitizeForBlessed(entry.agentName || entry.data?.agentName || 'unknown');
 
     lines.push(`{white-fg}Type:{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${entry.entryType}{/${this._getCommTypeColor(entry.entryType)}-fg}`);
     lines.push(`{white-fg}Agent:{/white-fg} {cyan-fg}${agent}{/cyan-fg}`);
@@ -203,26 +204,26 @@ export class CommunicationView {
 
     if (entry.data?.content) {
       lines.push('{white-fg}Content:{/white-fg}');
-      const wrapped = wrapText(entry.data.content, width - 2);
+      const wrapped = wrapText(sanitizeForBlessed(entry.data.content), width - 2);
       for (const line of wrapped) {
         lines.push(`  {gray-fg}${line}{/gray-fg}`);
       }
     }
 
     if (entry.data?.toolName) {
-      lines.push(`{white-fg}Tool:{/white-fg} {magenta-fg}${entry.data.toolName}{/magenta-fg}`);
+      lines.push(`{white-fg}Tool:{/white-fg} {magenta-fg}${sanitizeForBlessed(entry.data.toolName)}{/magenta-fg}`);
       if (entry.data?.input) {
         lines.push('{white-fg}Input:{/white-fg}');
         const inputStr = typeof entry.data.input === 'object' ? JSON.stringify(entry.data.input, null, 2) : String(entry.data.input);
         for (const line of inputStr.split('\n')) {
-          lines.push(`  {gray-fg}${line}{/gray-fg}`);
+          lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
         }
       }
       if (entry.data?.result) {
         lines.push('{white-fg}Result:{/white-fg}');
         const resultStr = typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result, null, 2) : String(entry.data.result);
         for (const line of resultStr.split('\n')) {
-          lines.push(`  {gray-fg}${line}{/gray-fg}`);
+          lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
         }
       }
     }
@@ -230,7 +231,7 @@ export class CommunicationView {
     if (entry.data?.toolCalls?.length > 0) {
       lines.push(`{white-fg}Tool Calls:{/white-fg} ${entry.data.toolCalls.length}`);
       for (const tc of entry.data.toolCalls) {
-        lines.push(`  {magenta-fg}${tc.name || 'unknown'}{/magenta-fg}`);
+        lines.push(`  {magenta-fg}${sanitizeForBlessed(tc.name || 'unknown')}{/magenta-fg}`);
       }
     }
   }

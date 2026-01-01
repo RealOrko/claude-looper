@@ -9,7 +9,8 @@ import {
   stripTags,
   truncateWithTags,
   formatTimestamp,
-  getContentWidth
+  getContentWidth,
+  sanitizeForBlessed
 } from './terminal-ui-utils.js';
 
 /**
@@ -296,8 +297,8 @@ export class EventsView {
       const event = categorizedEvents[i];
       const isSelected = i === this.eventSelectedIndex;
       const time = formatTimestamp(event.timestamp);
-      const type = event.data?.type || 'event';
-      const source = event.data?.source || event.agentName || '?';
+      const type = sanitizeForBlessed(event.data?.type || 'event');
+      const source = sanitizeForBlessed(event.data?.source || event.agentName || '?');
       const priority = event._priority || 'info';
       const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
       const desc = truncate(type, leftWidth - 20);
@@ -323,8 +324,8 @@ export class EventsView {
    */
   _renderEventDetails(lines, event, width) {
     const time = formatTimestamp(event.timestamp);
-    const type = event.data?.type || 'event';
-    const source = event.data?.source || event.agentName || 'unknown';
+    const type = sanitizeForBlessed(event.data?.type || 'event');
+    const source = sanitizeForBlessed(event.data?.source || event.agentName || 'unknown');
     const priority = event._priority || 'info';
     const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
 
@@ -338,7 +339,7 @@ export class EventsView {
       lines.push('{white-fg}Object:{/white-fg}');
       const objStr = typeof event.data.object === 'object' ? JSON.stringify(event.data.object, null, 2) : String(event.data.object);
       for (const line of objStr.split('\n')) {
-        lines.push(`  {gray-fg}${line}{/gray-fg}`);
+        lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
       }
     }
   }

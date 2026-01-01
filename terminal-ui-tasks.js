@@ -8,7 +8,8 @@ import {
   wrapText,
   stripTags,
   truncateWithTags,
-  getContentWidth
+  getContentWidth,
+  sanitizeForBlessed
 } from './terminal-ui-utils.js';
 
 /**
@@ -203,7 +204,7 @@ export class TasksView {
 
     const icon = isCurrent ? '*' : (isNext ? '>' : style.icon);
     const descMaxWidth = Math.max(10, graphWidth - prefix.length - 4);
-    const desc = truncate(task.description || 'Task', descMaxWidth);
+    const desc = truncate(sanitizeForBlessed(task.description || 'Task'), descMaxWidth);
 
     // Use bold for selection (no >> marker)
     const line = `{gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
@@ -228,7 +229,7 @@ export class TasksView {
     // Description
     lines.push('');
     lines.push('{white-fg}Description:{/white-fg}');
-    const descWrapped = wrapText(task.description || 'No description', detailWidth - 2);
+    const descWrapped = wrapText(sanitizeForBlessed(task.description || 'No description'), detailWidth - 2);
     for (const line of descWrapped) {
       lines.push(`  {gray-fg}${line}{/gray-fg}`);
     }
@@ -239,7 +240,7 @@ export class TasksView {
       lines.push('');
       lines.push('{white-fg}Criteria:{/white-fg}');
       for (const criterion of criteria) {
-        const critWrapped = wrapText(criterion, detailWidth - 4);
+        const critWrapped = wrapText(sanitizeForBlessed(criterion), detailWidth - 4);
         for (const line of critWrapped) {
           lines.push(`  {cyan-fg}+{/cyan-fg} ${line}`);
         }
@@ -255,7 +256,8 @@ export class TasksView {
         const subtask = taskMap.get(subtaskId);
         if (subtask) {
           const subStyle = STATUS_STYLES[subtask.status] || STATUS_STYLES.pending;
-          lines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subtask.description || subtaskId}`);
+          const subtaskDesc = sanitizeForBlessed(subtask.description || subtaskId);
+          lines.push(`  {${subStyle.fg}-fg}${subStyle.icon}{/${subStyle.fg}-fg} ${subtaskDesc}`);
         }
       }
     }
