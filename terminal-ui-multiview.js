@@ -454,6 +454,15 @@ export class TerminalUIMultiView {
     // Render the view content
     this._renderCurrentView();
 
+    // Scroll to the remembered selection for this view
+    if (viewType === ViewTypes.TASKS) {
+      this.scrollToLine(this.tasksView.taskGraphSelectedIndex);
+    } else if (viewType === ViewTypes.COMMUNICATION) {
+      this.scrollToLine(this.communicationView.commSelectedIndex);
+    } else if (viewType === ViewTypes.EVENTS) {
+      this.scrollToLine(this.eventsView.eventSelectedIndex);
+    }
+
     // Update tab bar and status
     this._renderTabBar();
     this._renderStatusBar();
