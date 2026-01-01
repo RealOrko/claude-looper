@@ -543,19 +543,19 @@ export class Orchestrator {
         break;
       }
 
-      // Proactively break down complex and medium tasks before executing
+      // Proactively break down complex tasks before executing
       // Respect maxReplanDepth to prevent unlimited nesting
       const maxReplanDepth = this.config.planner?.settings?.maxReplanDepth ?? 3;
       const taskDepth = this._getTaskDepth(task);
 
-      if (['complex', 'medium'].includes(task.metadata?.complexity) &&
+      if (task.metadata?.complexity === 'complex' &&
           (!task.subtasks || task.subtasks.length === 0) &&
           taskDepth < maxReplanDepth) {
         this._log(`[Orchestrator] ${task.metadata.complexity} task at depth ${taskDepth} detected, breaking into subtasks: ${task.description}`);
         await this.agents.planner.replan(task, `Proactive breakdown of ${task.metadata.complexity} task`);
         // Continue loop to pick up the new subtasks
         continue;
-      } else if (['complex', 'medium'].includes(task.metadata?.complexity) &&
+      } else if (task.metadata?.complexity === 'complex' &&
                  (!task.subtasks || task.subtasks.length === 0) &&
                  taskDepth >= maxReplanDepth) {
         this._log(`[Orchestrator] Skipping proactive breakdown: depth ${taskDepth} >= max ${maxReplanDepth}. Executing ${task.metadata.complexity} task directly.`);

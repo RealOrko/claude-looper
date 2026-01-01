@@ -52,7 +52,7 @@ Claude Looper **runs autonomously** and **never gives up arbitrarily**. The only
 │           │                                                    │
 │           ▼                                                    │
 │    ┌─────────────────────────────────────────────────────────┐ │
-│    │  Task complexity = medium/complex?                       │ │
+│    │  Task complexity = complex?                              │ │
 │    │      YES → 📋 REPLAN into subtasks (proactive)          │ │
 │    │      NO  → Continue to execution                        │ │
 │    └─────────────────────────────────────────────────────────┘ │
@@ -290,7 +290,7 @@ On resume:
 3️⃣ 💻 CODER "Create User model" ──▶ 🧪 TESTER fails
    └── 🔧 FIX: CODER fixes ──▶ 🧪 passes ──▶ ✅
 
-4️⃣ 💻 CODER "Add login endpoint" (complexity: medium)
+4️⃣ 💻 CODER "Add login endpoint" (complexity: complex)
    └── 📋 PROACTIVE REPLAN: Break into subtasks
    └── Subtasks: [Add route, Add validation, Add session]
    └── Each subtask ──▶ ✅ (retried if needed)
