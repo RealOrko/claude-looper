@@ -13,6 +13,25 @@ import {
 } from './terminal-ui-utils.js';
 
 /**
+ * Format elapsed time in human-readable format
+ * @param {number} ms - Elapsed time in milliseconds
+ * @returns {string} Formatted time string (e.g., "0:32", "5:23", "1:23:45")
+ */
+function formatElapsedTime(ms) {
+  if (ms < 0 || !Number.isFinite(ms)) return '0:00';
+
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}:${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  }
+  return `${minutes}:${seconds.toString().padStart(2, '0')}`;
+}
+
+/**
  * TasksView handles the rendering and navigation of the tasks view
  */
 export class TasksView {
@@ -218,6 +237,40 @@ export class TasksView {
     // Status
     const style = STATUS_STYLES[task.status] || STATUS_STYLES.pending;
     lines.push(`{white-fg}Status:{/white-fg} {${style.fg}-fg}${task.status}{/${style.fg}-fg}`);
+
+    // Elapsed Time - show for in_progress (live) or completed/failed (total duration)
+    if (task.status === 'in_progress') {
+      const startTime = task.startedAt || task.createdAt;
+      if (startTime) {
+        const elapsed = Date.now() - startTime;
+        lines.push(`{white-fg}Elapsed:{/white-fg} {yellow-fg}${formatElapsedTime(elapsed)}{/yellow-fg}`);
+      }
+    } else if (task.status === 'completed' || task.status === 'failed') {
+      const startTime = task.startedAt || task.createdAt;
+      const endTime = task.updatedAt || Date.now();
+      if (startTime) {
+        const duration = endTime - startTime;
+        const durationColor = task.status === 'completed' ? 'green' : 'red';
+        lines.push(`{white-fg}Duration:{/white-fg} {${durationColor}-fg}${formatElapsedTime(duration)}{/${durationColor}-fg}`);
+      }
+    }
+
+    // Retries - show attempts/maxAttempts if task has been attempted
+    const attempts = task.attempts || 0;
+    const maxAttempts = task.maxAttempts || 3;
+    if (attempts > 0) {
+      const attemptsColor = attempts >= maxAttempts ? 'red' : (attempts > 1 ? 'yellow' : 'white');
+      lines.push(`{white-fg}Retries:{/white-fg} {${attemptsColor}-fg}${attempts}/${maxAttempts}{/${attemptsColor}-fg}`);
+    }
+
+    // Replan info - show if task was created from a replan or has been replanned
+    if (task.parentTaskId) {
+      lines.push(`{white-fg}Replanned:{/white-fg} {cyan-fg}yes{/cyan-fg}`);
+    }
+    if (task.metadata?.replanReason) {
+      const reason = sanitizeForBlessed(task.metadata.replanReason);
+      lines.push(`{white-fg}Replan reason:{/white-fg} {gray-fg}${truncate(reason, detailWidth - 16)}{/gray-fg}`);
+    }
 
     // Complexity
     const complexity = task.metadata?.complexity || 'medium';

@@ -466,6 +466,11 @@ class AgentCore extends EventEmitter {
       task.attempts = (task.attempts || 0) + 1;
     }
 
+    // Track when task first started (for elapsed time display)
+    if (updates.status === 'in_progress' && !task.startedAt) {
+      task.startedAt = Date.now();
+    }
+
     Object.assign(task, updates, { updatedAt: Date.now() });
     agent.lastActivity = Date.now();
 

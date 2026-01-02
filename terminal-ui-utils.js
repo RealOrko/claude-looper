@@ -20,8 +20,8 @@ export const PHASE_NAMES = {
   verification: 'Verifying'
 };
 
-// Spinner frames for busy animation
-export const SPINNER_FRAMES = ['|', '/', '-', '\\', '|', '/', '-', '\\', '|', '/'];
+// Spinner frames for busy animation (braille dots - smooth spinning effect)
+export const SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 /**
  * Truncate text to specified width with ellipsis
