@@ -263,11 +263,9 @@ export class TasksView {
       lines.push(`{white-fg}Retries:{/white-fg} {${attemptsColor}-fg}${attempts}/${maxAttempts}{/${attemptsColor}-fg}`);
     }
 
-    // Replan info - show if task was created from a replan or has been replanned
-    if (task.parentTaskId) {
-      lines.push(`{white-fg}Replanned:{/white-fg} {cyan-fg}yes{/cyan-fg}`);
-    }
+    // Replan info - show if task has been replanned
     if (task.metadata?.replanReason) {
+      lines.push(`{white-fg}Replanned:{/white-fg} {cyan-fg}yes{/cyan-fg}`);
       const reason = sanitizeForBlessed(task.metadata.replanReason);
       lines.push(`{white-fg}Replan reason:{/white-fg} {gray-fg}${truncate(reason, detailWidth - 16)}{/gray-fg}`);
     }
