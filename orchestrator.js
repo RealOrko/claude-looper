@@ -505,10 +505,30 @@ export class Orchestrator {
   }
 
   /**
+   * Get the root task ID for a given task (walks up the parent chain)
+   * @param {object} task - The task to find root for
+   * @returns {string|null} The root task ID or null
+   */
+  _getRootTaskId(task) {
+    if (!task) return null;
+    const tasks = this.agents.planner.agent.tasks;
+    let current = task;
+    while (current.parentTaskId) {
+      const parent = tasks.find(t => t.id === current.parentTaskId);
+      if (!parent) break;
+      current = parent;
+    }
+    return current.id;
+  }
+
+  /**
    * Execute the main execution phase
    */
   async _executeExecutionPhase(plan) {
     this._log(`[Orchestrator] Starting execution phase`);
+
+    // Track the current root task to detect transitions between parent-level tasks
+    let currentRootTaskId = null;
 
     // Loop until all tasks are complete or supervisor says to stop
     while (true) {
@@ -560,6 +580,14 @@ export class Orchestrator {
                  taskDepth >= maxReplanDepth) {
         this._log(`[Orchestrator] Skipping proactive breakdown: depth ${taskDepth} >= max ${maxReplanDepth}. Executing ${task.metadata.complexity} task directly.`);
       }
+
+      // Check if we're transitioning to a new root-level task
+      const taskRootId = this._getRootTaskId(task);
+      if (currentRootTaskId && taskRootId !== currentRootTaskId) {
+        this._log(`[Orchestrator] Transitioning to new parent task, resetting sessions`);
+        agentExecutor.resetAllSessions();
+      }
+      currentRootTaskId = taskRootId;
 
       this._log(`[Orchestrator] Executing task: ${task.description}`);
 
