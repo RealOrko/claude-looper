@@ -259,9 +259,30 @@ export class TerminalUIMultiView {
     const phaseName = PHASE_NAMES[this.phase] || this.phase || '';
     const phaseText = phaseName ? ` {yellow-fg}[${phaseName}]{/yellow-fg}` : '';
 
+    // Build progress bar (root-level tasks only for stable denominator)
+    const progress = this._getProgress();
+    let progressBar = '';
+    if (progress.total > 0) {
+      const barWidth = 10;
+      const filled = Math.round((progress.percent / 100) * barWidth);
+      const empty = barWidth - filled;
+      const barColor = progress.percent === 100 ? 'green' : 'cyan';
+      progressBar = `{${barColor}-fg}[${'\u2588'.repeat(filled)}${'\u2591'.repeat(empty)}]{/${barColor}-fg} {white-fg}${progress.percent}%{/white-fg}`;
+    }
+
+    // Calculate left content and padding for right-aligned progress bar
+    const leftContent = `{blue-fg}│{/blue-fg}${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}{blue-fg}│{/blue-fg}${phaseText}  ${tabs.join('  ')}`;
+
+    // Strip tags to calculate visible length
+    const stripTags = (str) => str.replace(/\{[^}]+\}/g, '');
+    const leftLen = stripTags(leftContent).length;
+    const progressLen = stripTags(progressBar).length;
+    const screenWidth = this.widgets.header.width || 80;
+    const padding = Math.max(2, screenWidth - leftLen - progressLen - 1);
+
     // Blue bounded box for title using box-drawing characters
     this.widgets.header.setContent(
-      `{blue-fg}│{/blue-fg}${spinner}{bold}{cyan-fg}Claude Looper{/cyan-fg}{/bold}{blue-fg}│{/blue-fg}${phaseText}  ${tabs.join('  ')}`
+      leftContent + ' '.repeat(padding) + progressBar
     );
   }
 
@@ -298,6 +319,30 @@ export class TerminalUIMultiView {
     this.widgets.statusBar.setContent(
       `{blue-fg}│{/blue-fg}{bold}${viewConfig.description}{/bold}{blue-fg}│{/blue-fg}  ${helpText}  ${focusIndicator}`
     );
+  }
+
+  /**
+   * Calculate progress based on root-level tasks only.
+   * Root tasks are those without a parentTaskId.
+   * This keeps the denominator stable even when tasks are replanned into subtasks.
+   */
+  _getProgress() {
+    if (!this.tasks || this.tasks.length === 0) {
+      return { percent: 0, completed: 0, total: 0 };
+    }
+
+    // Filter to root-level tasks only (no parentTaskId)
+    const rootTasks = this.tasks.filter(t => !t.parentTaskId);
+
+    if (rootTasks.length === 0) {
+      return { percent: 0, completed: 0, total: 0 };
+    }
+
+    const completed = rootTasks.filter(t => t.status === 'completed').length;
+    const total = rootTasks.length;
+    const percent = Math.round((completed / total) * 100);
+
+    return { percent, completed, total };
   }
 
   /**
