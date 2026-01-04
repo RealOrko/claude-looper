@@ -169,6 +169,9 @@ export class PlannerAgent {
 
     const plan = this._parsePlanResult(result);
 
+    // Reset all sessions - new plan means fresh context for all agents
+    agentExecutor.resetAllSessions();
+
     // Create tasks in agent core
     const tasks = [];
     for (const taskDef of plan.tasks || []) {
@@ -281,6 +284,9 @@ export class PlannerAgent {
     );
 
     const replan = this._parseReplanResult(result);
+
+    // Reset all sessions - replan means fresh context for all agents
+    agentExecutor.resetAllSessions();
 
     // Create subtasks
     const subtasks = [];
