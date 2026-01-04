@@ -9,6 +9,7 @@
  * - Metrics tracking (calls, retries, costs)
  * - Retry logic with exponential backoff
  * - Fallback model support
+ * - Context budget enforcement per template
  *
  * Uses callbacks instead of EventEmitter for execution lifecycle events.
  * All events are routed through agentCore for centralized event management.
@@ -21,6 +22,34 @@ import fs from 'fs';
 import path from 'path';
 import Handlebars from 'handlebars';
 import agentCore from './agent-core.js';
+
+/**
+ * Context budgets per template (in characters).
+ * These limits prevent context explosion in deeply nested replans.
+ * @constant {Object.<string, Object>}
+ */
+const CONTEXT_BUDGETS = {
+  'coder/implement': {
+    previousAttempts: 2000,
+    completedTasks: 1000,
+    codeContext: 5000
+  },
+  'coder/fix': {
+    previousFixes: 1500,
+    failures: 2000
+  },
+  'supervisor/verify': {
+    agentOutput: 5000,
+    previousFeedback: 1000
+  },
+  'planner/replan': {
+    previousAttempts: 2000,
+    similarFailures: 1500
+  },
+  'tester/test': {
+    implementation: 3000
+  }
+};
 
 /**
  * Error categories for retry decisions.
@@ -213,14 +242,107 @@ export class AgentExecutor {
 
   /**
    * Render a template with context variables.
+   * Applies context budgets to prevent unbounded context growth.
    *
    * @param {string} templatePath - Relative path to template
    * @param {Object} [context={}] - Template context variables
    * @returns {string} Rendered template string
    */
   renderTemplate(templatePath, context = {}) {
+    // Apply context budgets before rendering
+    const templateKey = templatePath.replace('.hbs', '');
+    const budgets = CONTEXT_BUDGETS[templateKey];
+    const constrainedContext = budgets
+      ? this._applyContextBudgets(context, budgets, templateKey)
+      : context;
+
     const template = this.loadTemplate(templatePath);
-    return template(context);
+    const rendered = template(constrainedContext);
+
+    // Warn if rendered template is very large
+    const estimatedTokens = rendered.length / 4;
+    if (estimatedTokens > 8000 && this.options.verbose) {
+      console.warn(`[AgentExecutor] Large prompt (${Math.round(estimatedTokens)} est. tokens): ${templatePath}`);
+    }
+
+    return rendered;
+  }
+
+  /**
+   * Apply context budgets to constrain context size.
+   * Truncates or summarizes fields that exceed their budget.
+   *
+   * @private
+   * @param {Object} context - Original context
+   * @param {Object} budgets - Budget limits per field
+   * @param {string} templateKey - Template identifier for logging
+   * @returns {Object} Constrained context
+   */
+  _applyContextBudgets(context, budgets, templateKey) {
+    const constrained = { ...context };
+
+    for (const [field, budget] of Object.entries(budgets)) {
+      if (constrained[field] === undefined) continue;
+
+      const value = constrained[field];
+      const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+
+      if (serialized.length > budget) {
+        if (this.options.verbose) {
+          console.log(`[AgentExecutor] Truncating ${field} from ${serialized.length} to ${budget} chars for ${templateKey}`);
+        }
+        constrained[field] = this._truncateContext(value, budget);
+      }
+    }
+
+    return constrained;
+  }
+
+  /**
+   * Truncate context to fit within budget.
+   * For arrays, keeps most recent items. For strings, truncates with ellipsis.
+   *
+   * @private
+   * @param {*} value - Value to truncate
+   * @param {number} budget - Character budget
+   * @returns {*} Truncated value
+   */
+  _truncateContext(value, budget) {
+    if (typeof value === 'string') {
+      if (value.length <= budget) return value;
+      return value.substring(0, budget - 50) + '\n... [truncated for context budget]';
+    }
+
+    if (Array.isArray(value)) {
+      // For arrays, keep most recent items (end of array)
+      let result = [];
+      let currentSize = 2; // Account for []
+
+      // Work backwards to keep most recent
+      for (let i = value.length - 1; i >= 0; i--) {
+        const itemStr = JSON.stringify(value[i]);
+        if (currentSize + itemStr.length + 1 > budget) {
+          // Add truncation notice as first item
+          result.unshift({ _truncated: `${i + 1} earlier items omitted for context budget` });
+          break;
+        }
+        result.unshift(value[i]);
+        currentSize += itemStr.length + 1;
+      }
+      return result;
+    }
+
+    if (typeof value === 'object' && value !== null) {
+      // For objects, stringify and truncate
+      const str = JSON.stringify(value, null, 2);
+      if (str.length <= budget) return value;
+
+      // Try to parse back a truncated version
+      const truncated = str.substring(0, budget - 50);
+      return { _summary: truncated + '\n... [truncated]' };
+    }
+
+    return value;
   }
 
   /**

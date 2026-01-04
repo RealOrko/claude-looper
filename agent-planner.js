@@ -219,12 +219,16 @@ export class PlannerAgent {
   async replan(task, failureReason, previousAttempts = []) {
     const goal = this.currentPlan?.goal || 'Unknown goal';
 
+    // Get similar failures from other tasks for cross-task learning
+    const similarFailures = agentCore.getSimilarFailures(failureReason, 3);
+
     const templateContext = {
       goal,
       task,
       failureReason,
       attempts: task.attempts || previousAttempts.length,
-      previousAttempts
+      previousAttempts,
+      similarFailures
     };
 
     const jsonSchema = {

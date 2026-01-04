@@ -39,6 +39,17 @@ This is fix attempt {{fixCycle}} of {{maxFixCycles}}. If you cannot fix the issu
 
 Mark as "blocked" only if the fix requires architectural changes beyond this task's scope.
 
+## Pre-Submission Checklist
+
+Before calling `fixComplete`, verify:
+- [ ] I have actually run the tests and captured the output
+- [ ] testsPass accurately reflects the test results (not assumed)
+- [ ] If tests still fail, remainingIssues lists specific failures
+- [ ] My fix addresses the root cause, not just symptoms
+- [ ] I haven't introduced new issues while fixing
+
+If any check fails, address it before submitting.
+
 ## Output Format
 
 Call the `fixComplete` tool with:

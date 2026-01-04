@@ -12,13 +12,27 @@ This is a recursive replanning step - the original task was too complex or uncle
 {{failureReason}}
 
 {{#if previousAttempts}}
-## Previous Attempts
+## Previous Attempts on This Task
 {{#each previousAttempts}}
 ### Attempt #{{math @index "+" 1}}
 - Approach: {{this.approach}}
 - Result: {{this.result}}
 - Issues: {{this.issues}}
 {{/each}}
+{{/if}}
+
+{{#if similarFailures}}
+## Similar Failures in This Session
+
+Other tasks that failed for similar reasons - learn from these patterns:
+
+{{#each similarFailures}}
+### {{this.taskDescription}}
+- **Failure Pattern:** {{this.failurePattern}}
+- **Resolution:** {{this.resolution}}
+{{/each}}
+
+Consider these patterns when creating subtasks. Avoid repeating approaches that failed elsewhere.
 {{/if}}
 
 ## Instructions
@@ -30,8 +44,27 @@ The task proved too complex for a single implementation pass. Break it into smal
 3. Create 2-15 subtasks that each address one specific aspect
 4. Ensure each subtask is achievable in a single focused session
 5. Each subtask must have clear, testable verification criteria
+6. **Map each subtask to parent criteria** (see below)
 
 Subtasks should be simple enough that they won't require further breakdown.
+
+## Parent-Child Criteria Mapping
+
+{{#if task.metadata.verificationCriteria}}
+The parent task has these verification criteria:
+{{#each task.metadata.verificationCriteria}}
+{{@index}}. {{this}}
+{{/each}}
+
+**REQUIRED**: Each subtask you create must specify which parent criterion/criteria it addresses (by index number). This ensures:
+- No parent criterion is left unaddressed
+- Subtask completion maps to parent completion
+- Coverage gaps are visible
+
+Include a `parentCriteriaIndices` array in each subtask's metadata.
+{{else}}
+No explicit verification criteria on parent task. Ensure subtasks collectively accomplish the parent task's description.
+{{/if}}
 
 ## Output Format
 

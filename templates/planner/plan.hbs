@@ -46,10 +46,35 @@ Analyze the goal and create a detailed plan:
 1. Break the goal into 2-15 discrete, actionable tasks
 2. Each task should be completable in a single focused session
 3. Order tasks by dependency - tasks that others depend on come first
-4. Rate each task's complexity: simple (1 point) | medium (2 points) | complex (3 points)
+4. Rate each task's complexity using the sizing guide below
 5. Include specific verification criteria that the Tester can check
 
 Keep tasks focused. If a task seems too large, break it into multiple smaller tasks.
+
+## Task Sizing Guide
+
+| Complexity | Points | Characteristics | Examples |
+|------------|--------|-----------------|----------|
+| **Simple** | 1 | Single file, <50 lines, no new deps | Add a config option, fix a typo, rename a variable |
+| **Medium** | 2 | 2-3 files, <200 lines, internal utils | Add a new function with tests, refactor a module |
+| **Complex** | 3 | 4+ files, architectural, external APIs | Add a new feature, integrate external service |
+
+**Rules:**
+- If a task doesn't fit these bounds, break it down further
+- Complex tasks will be automatically broken into subtasks before execution
+- Aim for most tasks to be Simple or Medium
+- Never create tasks larger than Complex (3 points)
+
+## Pre-Submission Checklist
+
+Before calling `planComplete`, verify:
+- [ ] Each task has clear, testable verification criteria
+- [ ] Task dependencies are correctly specified (earlier tasks first)
+- [ ] No task is too large (complex tasks should be 3 points max)
+- [ ] All aspects of the goal are covered by at least one task
+- [ ] Risks and assumptions are realistic, not generic
+
+If any check fails, revise before submitting.
 
 ## Output Format
 

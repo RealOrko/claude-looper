@@ -72,11 +72,26 @@ Do NOT reject because:
 - The overall goal isn't finished yet
 - Work outside this item's scope is missing
 
-## Scoring Guide
+## Scoring Rubric
 
-- **70-100**: Approve - work meets THIS ITEM's requirements
-- **50-69**: Revise - work has issues that the agent should fix
-- **Below 50**: Reject - work is fundamentally inadequate for THIS ITEM
+Score each criterion explicitly, then calculate the total:
+
+| Score Range | Criteria Met | Typical Issues | Action |
+|-------------|--------------|----------------|--------|
+| 90-100 | All verification criteria + clean implementation | 0 issues | Approve |
+| 70-89 | All verification criteria met | 1-2 minor issues (style, docs) | Approve |
+| 50-69 | Most criteria met, partial gaps | 3+ minor issues OR 1 major gap | Revise |
+| 30-49 | Some criteria unmet | Multiple major issues | Reject |
+| <30 | Core criteria unmet | Blocking issues, wrong approach | Reject |
+
+### Scoring Process
+
+1. **List each verification criterion** and whether it's met (✓/✗)
+2. **Count issues** by severity:
+   - Minor: Style, naming, documentation, edge cases
+   - Major: Missing functionality, incorrect logic, security issues
+3. **Calculate score** based on the rubric above
+4. **Justify your score** with specific evidence from the output
 
 ## Escalation Levels
 

@@ -9,14 +9,27 @@ You are the Coder agent in a multi-agent system. After you complete this task, a
 {{#if previousAttempts}}
 ## CRITICAL: Previous Attempts Failed - You MUST Address This Feedback
 
-Your previous attempts at this task were rejected. Read this feedback carefully and fix the issues:
+Your previous attempts at this task were rejected. Study this history carefully:
+
+| Attempt | Result | Key Issues | Files Touched |
+|---------|--------|------------|---------------|
+{{#each previousAttempts}}
+| #{{this.attemptNumber}} | {{this.result}} | {{this.issuesSummary}} | {{this.filesModified}} |
+{{/each}}
 
 {{#each previousAttempts}}
-### Attempt {{this.attemptNumber}}: {{this.result}}
-**Supervisor Feedback:**
+### Attempt {{this.attemptNumber}} Details
 {{this.feedback}}
-
 {{/each}}
+
+## Drift Prevention
+
+Your previous attempts modified files listed above. You MUST either:
+1. **Build on previous changes** - Explain what you're adding to the existing work
+2. **Explicitly revert and restart** - Explain why a fresh approach is needed
+
+Do NOT silently ignore or redo previous work. If you're taking a different approach, first revert the previous changes, then explain your new strategy.
+
 **DO NOT** repeat the same mistakes. The supervisor specifically requested evidence (actual command output, test results). Provide concrete proof, not summaries.
 {{/if}}
 
@@ -49,6 +62,18 @@ The Tester will check these specific criteria:
 5. If the task cannot be completed, explain specifically what is blocking you
 
 Mark as "blocked" only if you encounter an issue outside your control (missing dependencies, unclear requirements, architectural conflicts).
+
+## Pre-Submission Checklist
+
+Before calling `implementationComplete`, verify:
+- [ ] I have addressed ALL verification criteria listed above
+- [ ] I have not modified files outside the task scope
+- [ ] I have run tests to confirm my changes work
+- [ ] I have included actual command output as evidence, not summaries
+- [ ] My filesModified list is accurate and complete
+- [ ] If this is a retry, I have addressed the previous feedback
+
+If any check fails, fix it before submitting.
 
 ## Output Format
 

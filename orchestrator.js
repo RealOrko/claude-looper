@@ -572,12 +572,20 @@ export class Orchestrator {
       if (result.success) {
         this.agents.planner.markTaskComplete(task.id, { completedAt: Date.now() });
       } else {
-        // Record this attempt
+        // Record this attempt with files modified for drift detection
         this._recordAttempt(task.id, {
           approach: result.approach,
           result: result.result,
-          error: result.error
+          error: result.error,
+          filesModified: result.filesModified || []
         });
+
+        // Record failure pattern for cross-task learning
+        agentCore.recordFailurePattern(
+          task.description,
+          result.error || 'Unknown failure',
+          'pending'
+        );
 
         // Mark task as failed (will be diagnosed on next iteration)
         this.agents.planner.markTaskFailed(task.id, result.error);
@@ -674,6 +682,8 @@ export class Orchestrator {
         // Break task into subtasks
         this._log(`[Orchestrator] Replanning task into subtasks (depth ${state.replanDepth + 1}/${maxReplanDepth})`);
         await this.agents.planner.replan(task, diagnosis.reasoning);
+        // Update failure pattern resolution
+        this._updateFailurePatternResolution(task.description, 'Replanned into subtasks');
         return { stop: false };
 
       case DIAGNOSIS_DECISIONS.IMPOSSIBLE:
@@ -722,7 +732,8 @@ export class Orchestrator {
         success: false,
         error: implementation.blockReason || 'Implementation blocked',
         approach: 'Initial implementation',
-        result: 'blocked'
+        result: 'blocked',
+        filesModified: implementation.filesModified || []
       };
     }
 
@@ -741,7 +752,8 @@ export class Orchestrator {
           success: false,
           error: fix.blockReason || 'Fix blocked',
           approach: `Fix attempt ${fixCycle}`,
-          result: 'blocked'
+          result: 'blocked',
+          filesModified: [...(implementation.filesModified || []), ...(fix.filesModified || [])]
         };
       }
 
@@ -778,7 +790,8 @@ export class Orchestrator {
           success: false,
           error: verification.feedback || 'Supervisor rejected',
           approach: 'Implementation with passing tests',
-          result: 'rejected by supervisor'
+          result: 'rejected by supervisor',
+          filesModified: implementation.filesModified || []
         };
       }
 
@@ -795,7 +808,8 @@ export class Orchestrator {
       success: false,
       error: failureDetails,
       approach: `Implementation with ${fixCycle} fix attempts`,
-      result: 'tests still failing'
+      result: 'tests still failing',
+      filesModified: implementation.filesModified || []
     };
   }
 
@@ -807,11 +821,62 @@ export class Orchestrator {
       this.taskAttempts.set(taskId, []);
     }
     const attempts = this.taskAttempts.get(taskId);
+
+    // Generate a concise issues summary from the error
+    const issuesSummary = this._summarizeIssues(attemptInfo.error);
+
     attempts.push({
       attemptNumber: attempts.length + 1,
       ...attemptInfo,
+      issuesSummary,
       timestamp: Date.now()
     });
+  }
+
+  /**
+   * Update resolution for a failure pattern
+   * @param {string} taskDescription - Description of the task
+   * @param {string} resolution - How it was resolved
+   */
+  _updateFailurePatternResolution(taskDescription, resolution) {
+    const patterns = agentCore.failurePatterns.filter(
+      p => p.taskDescription === taskDescription && p.resolution === 'pending'
+    );
+    for (const pattern of patterns) {
+      pattern.resolution = resolution;
+    }
+  }
+
+  /**
+   * Generate a concise summary of issues from error feedback
+   * @param {string} error - Full error/feedback text
+   * @returns {string} Concise summary (max 100 chars)
+   */
+  _summarizeIssues(error) {
+    if (!error) return 'Unknown';
+
+    // Extract key phrases from common error patterns
+    const patterns = [
+      /missing[:\s]+([^.]+)/i,
+      /failed[:\s]+([^.]+)/i,
+      /error[:\s]+([^.]+)/i,
+      /rejected[:\s]+([^.]+)/i,
+      /not[:\s]+([^.]+)/i,
+      /incorrect[:\s]+([^.]+)/i,
+      /incomplete[:\s]+([^.]+)/i
+    ];
+
+    for (const pattern of patterns) {
+      const match = error.match(pattern);
+      if (match && match[1]) {
+        const summary = match[1].trim().substring(0, 80);
+        return summary.length < match[1].trim().length ? summary + '...' : summary;
+      }
+    }
+
+    // Fallback: first 80 chars of error
+    const truncated = error.substring(0, 80).trim();
+    return error.length > 80 ? truncated + '...' : truncated;
   }
 
   /**

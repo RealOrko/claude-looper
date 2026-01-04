@@ -183,6 +183,76 @@ class AgentCore extends EventEmitter {
 
     // Increase listener limit for many agent subscriptions
     this.setMaxListeners(100);
+
+    /**
+     * Failure patterns learned during this session.
+     * Used to provide context when replanning similar tasks.
+     * @type {Array<Object>}
+     */
+    this.failurePatterns = [];
+  }
+
+  /**
+   * Record a failure pattern for cross-task learning.
+   *
+   * @param {string} taskDescription - Description of the failed task
+   * @param {string} failurePattern - Pattern/type of failure
+   * @param {string} resolution - How it was resolved (if known)
+   * @param {Object} [metadata={}] - Additional metadata
+   * @returns {Object} The recorded pattern
+   */
+  recordFailurePattern(taskDescription, failurePattern, resolution = 'pending', metadata = {}) {
+    const pattern = {
+      id: `fp-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      taskDescription,
+      failurePattern,
+      resolution,
+      timestamp: Date.now(),
+      metadata
+    };
+
+    this.failurePatterns.push(pattern);
+
+    // Keep bounded to prevent memory growth
+    if (this.failurePatterns.length > 50) {
+      this.failurePatterns = this.failurePatterns.slice(-50);
+    }
+
+    return pattern;
+  }
+
+  /**
+   * Get similar failure patterns for a given failure reason.
+   * Matches on keywords in the failure pattern.
+   *
+   * @param {string} failureReason - The current failure reason to match against
+   * @param {number} [limit=3] - Maximum patterns to return
+   * @returns {Array<Object>} Matching failure patterns
+   */
+  getSimilarFailures(failureReason, limit = 3) {
+    if (!failureReason || this.failurePatterns.length === 0) {
+      return [];
+    }
+
+    // Extract keywords from failure reason
+    const keywords = failureReason.toLowerCase()
+      .split(/\s+/)
+      .filter(w => w.length > 3)
+      .slice(0, 10);
+
+    // Score patterns by keyword matches
+    const scored = this.failurePatterns.map(pattern => {
+      const patternText = (pattern.failurePattern + ' ' + pattern.taskDescription).toLowerCase();
+      const matches = keywords.filter(kw => patternText.includes(kw)).length;
+      return { pattern, score: matches };
+    });
+
+    // Return top matches with score > 0
+    return scored
+      .filter(s => s.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, limit)
+      .map(s => s.pattern);
   }
 
   /**
@@ -967,11 +1037,12 @@ class AgentCore extends EventEmitter {
     this.ensureStateDir();
 
     const state = {
-      version: 2, // Bumped version for invocations support
+      version: 3, // Bumped version for failure patterns support
       timestamp: Date.now(),
       agents: this.agents,
       workflow: this.workflow,
       invocations: this.invocations, // Full invocations graph - no truncation
+      failurePatterns: this.failurePatterns, // Cross-task failure learning
       eventLog: this.eventLog.slice(-100), // Save last 100 events
       ...extras
     };
@@ -1017,6 +1088,7 @@ class AgentCore extends EventEmitter {
     this.agents = state.agents || {};
     this.workflow = state.workflow || { active: false };
     this.invocations = state.invocations || [];
+    this.failurePatterns = state.failurePatterns || [];
     this.eventLog = state.eventLog || [];
 
     this._emitEvent(EventTypes.SNAPSHOT_LOADED, {
@@ -1222,6 +1294,8 @@ class AgentCore extends EventEmitter {
       configuration: null
     };
     this.eventLog = [];
+    this.failurePatterns = [];
+    this.invocations = [];
   }
 
   /**
