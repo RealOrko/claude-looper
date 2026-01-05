@@ -45,6 +45,7 @@ export const EventTypes = {
   TASK_UPDATED: 'task:updated',
   TASK_COMPLETED: 'task:completed',
   TASK_FAILED: 'task:failed',
+  PLAN_SUPERSEDED: 'plan:superseded',
   MEMORY_UPDATED: 'memory:updated',
   OUTPUT_RECORDED: 'output:recorded',
   INTERACTION_LOGGED: 'interaction:logged',
@@ -590,6 +591,53 @@ class AgentCore extends EventEmitter {
     parentTask.subtasks.push(taskObj.id);
 
     return taskObj;
+  }
+
+  /**
+   * Remove all tasks belonging to a specific goal.
+   * Used when a plan is superseded by a new plan (e.g., after supervisor rejection).
+   * Emits 'plan:superseded' event with details of removed tasks.
+   *
+   * @param {string} agentName - Agent name
+   * @param {string} goalId - Goal ID whose tasks should be removed
+   * @param {string} [reason] - Reason for superseding the plan
+   * @returns {Object} Result with count of removed tasks and their IDs
+   * @throws {Error} If agent is not found
+   */
+  removeTasksByGoalId(agentName, goalId, reason = 'Plan superseded by new plan') {
+    const agent = this.agents[agentName];
+    if (!agent) {
+      throw new Error(`Agent '${agentName}' not found`);
+    }
+
+    // Find tasks to remove
+    const tasksToRemove = agent.tasks.filter(t => t.parentGoalId === goalId);
+    const removedTaskIds = tasksToRemove.map(t => t.id);
+    const removedCount = tasksToRemove.length;
+
+    if (removedCount === 0) {
+      return { removedCount: 0, removedTaskIds: [] };
+    }
+
+    // Remove tasks from agent's task list
+    agent.tasks = agent.tasks.filter(t => t.parentGoalId !== goalId);
+    agent.lastActivity = Date.now();
+
+    // Emit event
+    this._emitEvent(EventTypes.PLAN_SUPERSEDED, {
+      source: agentName,
+      changeType: ChangeTypes.REMOVED,
+      object: {
+        goalId,
+        reason,
+        removedCount,
+        removedTaskIds,
+        removedTasks: tasksToRemove
+      },
+      agentState: agent
+    });
+
+    return { removedCount, removedTaskIds };
   }
 
   /**

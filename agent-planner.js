@@ -106,6 +106,26 @@ export class PlannerAgent {
    * @param {object} context - Additional context
    */
   async createPlan(goal, context = {}) {
+    // If there's a previous plan being superseded, remove its tasks
+    if (context.previousPlan?.goalId) {
+      const result = agentCore.removeTasksByGoalId(
+        this.name,
+        context.previousPlan.goalId,
+        context.feedback ? `Supervisor feedback: ${context.feedback}` : 'Plan superseded by revision'
+      );
+      if (result.removedCount > 0) {
+        // Log removal for debugging
+        agentCore.addMemory(this.name, {
+          content: `Removed ${result.removedCount} tasks from superseded plan`,
+          type: 'plan_superseded',
+          metadata: {
+            oldGoalId: context.previousPlan.goalId,
+            removedCount: result.removedCount
+          }
+        });
+      }
+    }
+
     // Set the goal for the planner
     const goalObj = agentCore.setGoal(this.name, {
       description: goal,
