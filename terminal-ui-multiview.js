@@ -203,7 +203,7 @@ export class TerminalUIMultiView {
         border: { fg: 'cyan' }
       },
       border: { type: 'line' },
-      content: '{gray-fg}Loading...{/gray-fg}'
+      content: '{white-fg}Loading...{/white-fg}'
     });
 
     // Right panel (details view)
@@ -227,10 +227,10 @@ export class TerminalUIMultiView {
       style: {
         fg: 'white',
         bg: 'black',
-        border: { fg: IS_WINDOWS ? 'blue' : 'gray' }
+        border: { fg: 'blue' }
       },
       border: { type: 'line' },
-      content: '{gray-fg}Select an item{/gray-fg}'
+      content: '{white-fg}Select an item{/white-fg}'
     });
 
     // Status bar (bottom, no border)
@@ -259,7 +259,7 @@ export class TerminalUIMultiView {
     for (const viewType of VIEW_ORDER) {
       const config = VIEW_CONFIG[viewType];
       const isActive = viewType === this.currentView;
-      const dimColor = IS_WINDOWS ? 'white' : 'gray';
+      const dimColor = 'white';
       const style = isActive ? '{cyan-fg}{bold}' : `{${dimColor}-fg}`;
       const endStyle = isActive ? '{/bold}{/cyan-fg}' : `{/${dimColor}-fg}`;
       const indicator = isActive ? '*' : 'o';
@@ -327,7 +327,7 @@ export class TerminalUIMultiView {
       shortcuts.splice(3, 0, `{white-fg}f{/white-fg} Filter`, `{white-fg}p{/white-fg} Priority`);
     }
 
-    const dimTag = IS_WINDOWS ? 'blue' : 'gray';
+    const dimTag = 'blue';
     const helpText = `{${dimTag}-fg}${shortcuts.join('  ')}{/${dimTag}-fg}`;
     const focusIndicator = `{cyan-fg}[${focusedName}]{/cyan-fg}`;
 
@@ -638,7 +638,7 @@ export class TerminalUIMultiView {
   _updatePanelFocusStyles() {
     const leftPanel = this.widgets.leftPanel;
     const rightPanel = this.widgets.rightPanel;
-    const dimBorder = IS_WINDOWS ? 'blue' : 'gray';
+    const dimBorder = 'blue';
 
     if (this.focusedPanel === 'left') {
       leftPanel.style.border.fg = 'cyan';
@@ -918,7 +918,7 @@ export class TerminalUIMultiView {
       ? `{green-fg}{bold}COMPLETED{/bold}{/green-fg} in ${durationStr}`
       : `{red-fg}{bold}FAILED{/bold}{/red-fg} after ${durationStr}`;
 
-    const dimExit = IS_WINDOWS ? 'blue' : 'gray';
+    const dimExit = 'blue';
     const helpText = `{${dimExit}-fg}Press q to exit{/${dimExit}-fg}`;
 
     this.widgets.statusBar.setContent(

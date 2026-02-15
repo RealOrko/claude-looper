@@ -258,7 +258,7 @@ export class EventsView {
       case 'workflow': return 'blue';
       case 'tool': return 'yellow';
       case 'error': return 'red';
-      case 'system': return IS_WINDOWS ? 'white' : 'gray';
+      case 'system': return 'white';
       default: return 'white';
     }
   }
@@ -289,8 +289,8 @@ export class EventsView {
 
     if (categorizedEvents.length === 0) {
       return {
-        left: ['{gray-fg}No events recorded yet...{/gray-fg}'],
-        right: ['{gray-fg}Select an event to view details{/gray-fg}']
+        left: ['{white-fg}No events recorded yet...{/white-fg}'],
+        right: ['{white-fg}Select an event to view details{/white-fg}']
       };
     }
 
@@ -306,7 +306,7 @@ export class EventsView {
       const color = priority === 'error' ? 'red' : priority === 'warning' ? 'yellow' : 'white';
       const desc = truncate(type, leftWidth - 20);
       // Use bold for selection (same style as task tree)
-      const line = `{gray-fg}${time}{/gray-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}`;
+      const line = `{white-fg}${time}{/white-fg} {${color}-fg}${desc}{/${color}-fg} {cyan-fg}${source}{/cyan-fg}`;
       leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
     }
 
@@ -334,7 +334,7 @@ export class EventsView {
 
     lines.push(`{white-fg}Type:{/white-fg} {${color}-fg}${type}{/${color}-fg}`);
     lines.push(`{white-fg}Source:{/white-fg} {cyan-fg}${source}{/cyan-fg}`);
-    lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
+    lines.push(`{white-fg}Time:{/white-fg} {white-fg}${time}{/white-fg}`);
     lines.push(`{white-fg}Priority:{/white-fg} {${color}-fg}${priority}{/${color}-fg}`);
     lines.push('');
 
@@ -342,7 +342,7 @@ export class EventsView {
       lines.push('{white-fg}Object:{/white-fg}');
       const objStr = typeof event.data.object === 'object' ? JSON.stringify(event.data.object, null, 2) : String(event.data.object);
       for (const line of objStr.split('\n')) {
-        lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
+        lines.push(`  {white-fg}${sanitizeForBlessed(line)}{/white-fg}`);
       }
     }
   }
@@ -414,7 +414,7 @@ export class EventsView {
     }
 
     if (filterParts.length > 0) {
-      lines.push(`{yellow-fg}Active Filters:{/yellow-fg} ${filterParts.join('  ')}  {gray-fg}(${filteredCount} of ${totalCount} events){/gray-fg}`);
+      lines.push(`{yellow-fg}Active Filters:{/yellow-fg} ${filterParts.join('  ')}  {white-fg}(${filteredCount} of ${totalCount} events){/white-fg}`);
     }
   }
 
@@ -442,7 +442,7 @@ export class EventsView {
     lines.push('');
 
     // Main event line with category icon and priority
-    let mainLine = `${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} `;
+    let mainLine = `${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} `;
     mainLine += `{${priorityColor}-fg}${priorityIcon}{/${priorityColor}-fg} `;
     mainLine += `{${categoryColor}-fg}${categoryIcon} [${event._category.toUpperCase()}]{/${categoryColor}-fg} `;
     mainLine += `{cyan-fg}[${source}]{/cyan-fg} `;
@@ -455,7 +455,7 @@ export class EventsView {
       const desc = event.data.object.description || event.data.object.status || '';
       if (desc) {
         const preview = truncate(desc, contentWidth - 10);
-        lines.push(`    {gray-fg}${preview}{/gray-fg}`);
+        lines.push(`    {white-fg}${preview}{/white-fg}`);
       }
     }
 
@@ -491,10 +491,10 @@ export class EventsView {
         const objLines = objStr.split('\n');
         for (const objLine of objLines) {
           const truncatedLine = truncate(objLine, contentWidth - 8);
-          lines.push(`{${categoryColor}-fg}│{/${categoryColor}-fg}   {gray-fg}${truncatedLine}{/gray-fg}`);
+          lines.push(`{${categoryColor}-fg}│{/${categoryColor}-fg}   {white-fg}${truncatedLine}{/white-fg}`);
         }
       } catch {
-        lines.push(`{${categoryColor}-fg}│{/${categoryColor}-fg}   {gray-fg}${String(event.data.object)}{/gray-fg}`);
+        lines.push(`{${categoryColor}-fg}│{/${categoryColor}-fg}   {white-fg}${String(event.data.object)}{/white-fg}`);
       }
     }
 

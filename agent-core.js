@@ -1099,7 +1099,7 @@ class AgentCore extends EventEmitter {
     const statePath = this.getStatePath();
     const tempPath = `${statePath}.tmp.${process.pid}`;
     fs.writeFileSync(tempPath, JSON.stringify(state, null, 2));
-    fs.renameSync(tempPath, statePath);
+    this._renameWithRetry(tempPath, statePath);
 
     this._emitEvent(EventTypes.SNAPSHOT_SAVED, {
       source: 'core',
@@ -1179,8 +1179,29 @@ class AgentCore extends EventEmitter {
     const configPath = this.getConfigPath();
     const tempPath = `${configPath}.tmp.${process.pid}`;
     fs.writeFileSync(tempPath, JSON.stringify(config, null, 2));
-    fs.renameSync(tempPath, configPath);
+    this._renameWithRetry(tempPath, configPath);
     return config;
+  }
+
+  /**
+   * Rename file with retry logic for Windows EPERM errors.
+   * Windows can transiently lock files (antivirus, indexing, etc).
+   */
+  _renameWithRetry(src, dest, retries = 3) {
+    for (let i = 0; i < retries; i++) {
+      try {
+        fs.renameSync(src, dest);
+        return;
+      } catch (err) {
+        if (err.code === 'EPERM' && i < retries - 1) {
+          // Small busy-wait before retry
+          const start = Date.now();
+          while (Date.now() - start < 50) { /* spin */ }
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   /**

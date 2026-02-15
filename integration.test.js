@@ -581,12 +581,13 @@ describe('Integration - Resume Functionality', () => {
     assert.strictEqual(agentCore.canResume(), true);
 
     // Delete state file and reset to test the "no state to resume" scenario
-    const stateDir = path.join(process.cwd(), '.claude-looper');
-    const statePath = path.join(stateDir, 'state.json');
-    if (fs.existsSync(statePath)) {
-      fs.unlinkSync(statePath);
-    }
+    const statePath = agentCore.getStatePath();
+    const stateDir = path.dirname(statePath);
     agentCore.reset();
+    // Remove the entire state directory to ensure no leftover files
+    if (fs.existsSync(stateDir)) {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
 
     const orchestrator2 = new Orchestrator({
       configDir: TEST_CONFIG_DIR,

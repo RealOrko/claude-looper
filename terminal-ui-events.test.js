@@ -475,7 +475,7 @@ describe('EventsView - Colors and Icons', () => {
     assert.strictEqual(eventsView.getCategoryColor('workflow'), 'blue');
     assert.strictEqual(eventsView.getCategoryColor('tool'), 'yellow');
     assert.strictEqual(eventsView.getCategoryColor('error'), 'red');
-    assert.strictEqual(eventsView.getCategoryColor('system'), 'gray');
+    assert.strictEqual(eventsView.getCategoryColor('system'), 'white');
   });
 
   it('should get correct category icons', () => {

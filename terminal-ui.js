@@ -13,7 +13,7 @@ import blessed from 'blessed';
 
 // Status icons and colors (ASCII only for terminal compatibility)
 const STATUS_STYLES = {
-  pending: { icon: 'o', fg: 'gray' },
+  pending: { icon: 'o', fg: 'white' },
   in_progress: { icon: '*', fg: 'yellow' },
   completed: { icon: '+', fg: 'green' },
   failed: { icon: 'x', fg: 'red' },
@@ -148,7 +148,7 @@ export class TerminalUI {
         label: { fg: 'cyan', bold: true }
       },
       border: { type: 'line' },
-      content: '{gray-fg}Waiting for agent...{/gray-fg}'
+      content: '{white-fg}Waiting for agent...{/white-fg}'
     });
     this.agentLines = [];
 
@@ -390,8 +390,8 @@ export class TerminalUI {
       const inProgress = this.tasks.filter(t => t.status === 'in_progress').length;
 
       lines.push('');
-      lines.push(`{gray-fg}${'─'.repeat(Math.min(30, contentWidth))}{/gray-fg}`);
-      lines.push(`{white-fg}${completed}/${total} complete{/white-fg} {gray-fg}│{/gray-fg} {yellow-fg}${inProgress} active{/yellow-fg} {gray-fg}│{/gray-fg} {gray-fg}${pending} pending{/gray-fg}`);
+      lines.push(`{white-fg}${'─'.repeat(Math.min(30, contentWidth))}{/white-fg}`);
+      lines.push(`{white-fg}${completed}/${total} complete{/white-fg} {white-fg}│{/white-fg} {yellow-fg}${inProgress} active{/yellow-fg} {white-fg}│{/white-fg} {white-fg}${pending} pending{/white-fg}`);
     }
 
     this.widgets.tasks.setContent(lines.join('\n'));
@@ -419,12 +419,12 @@ export class TerminalUI {
     const time = this._formatTime();
     const sepWidth = Math.min(contentWidth, 50); // cap at 50 for aesthetics
     const sep = '─'.repeat(sepWidth);
-    this.agentLines.push(`{gray-fg}${sep}{/gray-fg}`);
+    this.agentLines.push(`{white-fg}${sep}{/white-fg}`);
     // Truncate label if needed
     const maxLabelLen = contentWidth - time.length - 2;
     const safeLabel = this._truncate(label, maxLabelLen);
     this.agentLines.push(`{cyan-fg}${time}{/cyan-fg} {bold}${safeLabel}{/bold}`);
-    this.agentLines.push(`{gray-fg}${sep}{/gray-fg}`);
+    this.agentLines.push(`{white-fg}${sep}{/white-fg}`);
   }
 
   /**
@@ -505,7 +505,7 @@ export class TerminalUI {
             ? cleanInput.substring(0, maxLen) + '...'
             : cleanInput;
           for (const line of preview.split('\n').slice(0, 8)) {
-            this.agentLines.push(`  {gray-fg}${this._truncate(line, contentWidth - 2)}{/gray-fg}`);
+            this.agentLines.push(`  {white-fg}${this._truncate(line, contentWidth - 2)}{/white-fg}`);
           }
         }
         break;
@@ -533,7 +533,7 @@ export class TerminalUI {
 
       case 'event':
         const cleanEvent = this._sanitizeText(entry.content);
-        this.agentLines.push(`{gray-fg}[${this._truncate(cleanEvent, contentWidth - 2)}]{/gray-fg}`);
+        this.agentLines.push(`{white-fg}[${this._truncate(cleanEvent, contentWidth - 2)}]{/white-fg}`);
         break;
 
       case 'raw':
@@ -629,11 +629,11 @@ export class TerminalUI {
     const displayLines = promptLines.slice(0, maxPromptLines);
 
     for (const line of displayLines) {
-      this.agentLines.push(`{gray-fg}${line}{/gray-fg}`);
+      this.agentLines.push(`{white-fg}${line}{/white-fg}`);
     }
 
     if (promptLines.length > maxPromptLines) {
-      this.agentLines.push(`{gray-fg}  ... (${promptLines.length - maxPromptLines} more lines){/gray-fg}`);
+      this.agentLines.push(`{white-fg}  ... (${promptLines.length - maxPromptLines} more lines){/white-fg}`);
     }
 
     // Add separator before response
@@ -698,7 +698,7 @@ export class TerminalUI {
     this.agentLines = [];
     this.jsonBuffer = '';
     // Set placeholder content to avoid empty panel rendering issues
-    this.widgets.agent.setContent('{gray-fg}Waiting for agent...{/gray-fg}');
+    this.widgets.agent.setContent('{white-fg}Waiting for agent...{/white-fg}');
     this.widgets.agent.setLabel(' Agent Output ');
     this.currentAgent = null;
     this.screen.render();

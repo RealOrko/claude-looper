@@ -148,6 +148,9 @@ export class SupervisorAgent {
       verificationsPerformed: this.agent.state.verificationsPerformed + 1
     });
 
+    // Run pre-checks to catch obvious contradictions
+    const preCheckIssues = this._runPreChecks(verificationType, context);
+
     // Prepare template context
     const templateContext = {
       goal,
@@ -156,7 +159,8 @@ export class SupervisorAgent {
       sourceAgent,
       agentOutput: typeof agentOutput === 'string' ? agentOutput : JSON.stringify(agentOutput, null, 2),
       previousFeedback,
-      attemptNumber: attemptNumber || 1
+      attemptNumber: attemptNumber || 1,
+      preCheckIssues: preCheckIssues.length > 0 ? preCheckIssues : undefined
     };
 
     // Build JSON schema for structured response
@@ -458,6 +462,72 @@ export class SupervisorAgent {
   }
 
   /**
+   * Run basic pre-checks to catch obvious contradictions before LLM call
+   * @param {string} verificationType - Type of verification
+   * @param {object} context - Verification context
+   * @returns {Array} Array of {severity, message} objects
+   */
+  _runPreChecks(verificationType, context) {
+    const issues = [];
+    const output = context.agentOutput;
+    const parsed = typeof output === 'string' ? (() => { try { return JSON.parse(output); } catch { return null; } })() : output;
+
+    if ((verificationType === VERIFICATION_TYPES.CODE || verificationType === VERIFICATION_TYPES.STEP) && parsed) {
+      // filesModified empty when claiming complete
+      if (parsed.status === 'complete' || parsed.status === 'passed') {
+        const files = parsed.filesModified || parsed.files_modified || [];
+        if (Array.isArray(files) && files.length === 0) {
+          issues.push({ severity: 'VIOLATION', message: 'Claims complete but filesModified is empty — no files were actually changed' });
+        }
+      }
+
+      // Test count math: testsPassed + testsFailed should equal testsRun
+      const testsRun = parsed.testsRun ?? parsed.tests_run;
+      const testsPassed = parsed.testsPassed ?? parsed.tests_passed;
+      const testsFailed = parsed.testsFailed ?? parsed.tests_failed;
+      if (testsRun !== undefined && testsPassed !== undefined && testsFailed !== undefined) {
+        if (testsPassed + testsFailed !== testsRun) {
+          issues.push({ severity: 'VIOLATION', message: `Test count mismatch: passed(${testsPassed}) + failed(${testsFailed}) != run(${testsRun})` });
+        }
+      }
+
+      // "passed" with 0 tests
+      if ((parsed.status === 'passed' || parsed.testStatus === 'passed') && (testsRun === 0 || testsRun === undefined)) {
+        issues.push({ severity: 'VIOLATION', message: 'Status is "passed" but zero tests were actually run' });
+      }
+    }
+
+    if (verificationType === VERIFICATION_TYPES.PLAN && parsed) {
+      const tasks = parsed.tasks || parsed.steps || [];
+      if (Array.isArray(tasks)) {
+        for (const task of tasks) {
+          const criteria = task.verificationCriteria || task.verification_criteria;
+          if (!criteria || (Array.isArray(criteria) && criteria.length === 0)) {
+            issues.push({ severity: 'WARNING', message: `Task "${task.title || task.name || task.id || '?'}" has no verification criteria` });
+          } else if (Array.isArray(criteria)) {
+            const vague = criteria.filter(c => /^(works? correctly|is implemented|is done|is complete|functions? as expected)$/i.test(c.trim()));
+            for (const v of vague) {
+              issues.push({ severity: 'WARNING', message: `Vague criterion "${v}" on task "${task.title || task.name || task.id || '?'}" — needs measurable specifics` });
+            }
+          }
+        }
+      }
+    }
+
+    if (verificationType === VERIFICATION_TYPES.GOAL && parsed) {
+      const tasks = parsed.tasks || parsed.completedTasks || [];
+      if (Array.isArray(tasks)) {
+        const incomplete = tasks.filter(t => t.status !== 'completed' && t.status !== 'complete' && t.status !== 'done');
+        if (incomplete.length > 0) {
+          issues.push({ severity: 'VIOLATION', message: `${incomplete.length} task(s) still incomplete at goal gate: ${incomplete.map(t => t.title || t.name || t.id || '?').join(', ')}` });
+        }
+      }
+    }
+
+    return issues;
+  }
+
+  /**
    * Parse verification result from structured output
    */
   _parseVerificationResult(result) {
@@ -497,27 +567,30 @@ export class SupervisorAgent {
 
   /**
    * Fallback text parsing (should rarely be needed with JSON schema)
+   * Conservative defaults: score 35, never auto-approve, always flag as fallback
    */
   _parseTextResponse(response, type) {
-    // Extract score
-    const scoreMatch = response.match(/score[:\s]+(\d+)/i);
-    const score = scoreMatch ? parseInt(scoreMatch[1]) : 50;
+    const FALLBACK_WARNING = 'FALLBACK PARSING: Structured output failed — result confidence is low';
 
-    // Extract approved/passed
+    // Extract score (default to 35 instead of 50 to avoid accidental approvals)
+    const scoreMatch = response.match(/score[:\s]+(\d+)/i);
+    const score = scoreMatch ? parseInt(scoreMatch[1]) : 35;
+
+    // Extract approved/passed — never auto-approve on fallback
     const approvedMatch = response.match(/(approved|passed|accept)[:\s]+(yes|true|no|false)/i);
-    const approved = approvedMatch ? ['yes', 'true'].includes(approvedMatch[2].toLowerCase()) : score >= QUALITY_THRESHOLDS.APPROVE;
+    const approved = approvedMatch ? ['yes', 'true'].includes(approvedMatch[2].toLowerCase()) : false;
 
     if (type === 'verification') {
       return {
         score,
         approved,
         completeness: score >= 70 ? 'complete' : score >= 50 ? 'partial' : 'insufficient',
-        issues: [],
+        issues: [FALLBACK_WARNING],
         missingElements: [],
         risks: [],
         recommendation: score >= QUALITY_THRESHOLDS.APPROVE ? 'approve' : score >= QUALITY_THRESHOLDS.REVISE ? 'revise' : 'reject',
-        feedback: response.substring(0, 500),
-        escalationLevel: this._determineEscalation(score, [])
+        feedback: `${FALLBACK_WARNING}. ${response.substring(0, 450)}`,
+        escalationLevel: this._determineEscalation(score, [FALLBACK_WARNING])
       };
     }
 
@@ -525,7 +598,7 @@ export class SupervisorAgent {
       onTrack: score >= 50,
       percentComplete: Math.min(score, 100),
       healthScore: score,
-      concerns: [],
+      concerns: [FALLBACK_WARNING],
       recommendations: [],
       continueExecution: score >= QUALITY_THRESHOLDS.REJECT,
       abortReason: score < QUALITY_THRESHOLDS.REJECT ? 'Score too low' : undefined

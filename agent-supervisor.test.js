@@ -280,12 +280,12 @@ describe('SupervisorAgent - Text Response Parsing', () => {
     assert.strictEqual(parsed.approved, true);
   });
 
-  it('should infer approved based on score when not explicit', () => {
+  it('should never auto-approve on fallback when approval not explicit', () => {
     const response = 'Score: 75';
 
     const parsed = supervisor._parseTextResponse(response, 'verification');
 
-    assert.strictEqual(parsed.approved, true); // Score >= 70
+    assert.strictEqual(parsed.approved, false); // Fallback never auto-approves
   });
 
   it('should determine completeness based on score', () => {
@@ -310,12 +310,14 @@ describe('SupervisorAgent - Text Response Parsing', () => {
     assert.strictEqual(reject.recommendation, 'reject');
   });
 
-  it('should truncate feedback to 500 characters', () => {
+  it('should truncate feedback with fallback warning prefix', () => {
     const longResponse = 'A'.repeat(1000);
 
     const parsed = supervisor._parseTextResponse(longResponse, 'verification');
 
-    assert.strictEqual(parsed.feedback.length, 500);
+    assert.ok(parsed.feedback.startsWith('FALLBACK PARSING:'));
+    assert.ok(parsed.feedback.length < 600, 'Feedback should be truncated well below original length');
+    assert.ok(parsed.feedback.length < longResponse.length, 'Feedback should be shorter than input');
   });
 
   it('should handle progress type parsing', () => {
@@ -552,11 +554,11 @@ describe('SupervisorAgent - Quality Threshold Boundaries', () => {
     supervisor = new SupervisorAgent();
   });
 
-  it('should handle score at APPROVE boundary (70)', () => {
+  it('should handle score at APPROVE boundary (70) but not auto-approve on fallback', () => {
     const response = 'Score: 70';
     const parsed = supervisor._parseTextResponse(response, 'verification');
 
-    assert.strictEqual(parsed.approved, true);
+    assert.strictEqual(parsed.approved, false); // Fallback never auto-approves
     assert.strictEqual(parsed.recommendation, 'approve');
     assert.strictEqual(parsed.completeness, 'complete');
   });
@@ -599,13 +601,14 @@ describe('SupervisorAgent - Quality Threshold Boundaries', () => {
     assert.strictEqual(parsed.approved, false);
     assert.strictEqual(parsed.recommendation, 'reject');
     assert.strictEqual(parsed.completeness, 'insufficient');
+    assert.ok(parsed.issues.length > 0, 'Fallback should inject warning into issues');
   });
 
-  it('should default to 50 when no score found', () => {
+  it('should default to 35 when no score found (conservative fallback)', () => {
     const response = 'No score mentioned';
     const parsed = supervisor._parseTextResponse(response, 'verification');
 
-    assert.strictEqual(parsed.score, 50);
+    assert.strictEqual(parsed.score, 35);
   });
 });
 
@@ -821,5 +824,172 @@ describe('SupervisorAgent - Diagnosis State', () => {
   it('should include diagnosesPerformed in stats', () => {
     const stats = supervisor.getStats();
     assert.ok('diagnosesPerformed' in stats);
+  });
+});
+
+// =============================================================================
+// Pre-Check Tests
+// =============================================================================
+
+describe('SupervisorAgent - Pre-Checks (CODE/STEP)', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should flag complete status with empty filesModified', () => {
+    const issues = supervisor._runPreChecks('code', {
+      agentOutput: JSON.stringify({ status: 'complete', filesModified: [] })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'VIOLATION' && i.message.includes('filesModified is empty')));
+  });
+
+  it('should flag test count mismatch', () => {
+    const issues = supervisor._runPreChecks('step', {
+      agentOutput: JSON.stringify({ testsRun: 10, testsPassed: 7, testsFailed: 2 })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'VIOLATION' && i.message.includes('Test count mismatch')));
+  });
+
+  it('should flag passed status with zero tests', () => {
+    const issues = supervisor._runPreChecks('code', {
+      agentOutput: JSON.stringify({ status: 'passed', testsRun: 0 })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'VIOLATION' && i.message.includes('zero tests')));
+  });
+
+  it('should return no issues for valid code output', () => {
+    const issues = supervisor._runPreChecks('code', {
+      agentOutput: JSON.stringify({
+        status: 'complete',
+        filesModified: ['src/index.js'],
+        testsRun: 5,
+        testsPassed: 5,
+        testsFailed: 0
+      })
+    });
+
+    assert.strictEqual(issues.length, 0);
+  });
+
+  it('should handle non-JSON agentOutput gracefully', () => {
+    const issues = supervisor._runPreChecks('code', {
+      agentOutput: 'just some plain text output'
+    });
+
+    assert.strictEqual(issues.length, 0);
+  });
+});
+
+describe('SupervisorAgent - Pre-Checks (PLAN)', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should flag tasks without verification criteria', () => {
+    const issues = supervisor._runPreChecks('plan', {
+      agentOutput: JSON.stringify({
+        tasks: [{ title: 'Do stuff' }]
+      })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'WARNING' && i.message.includes('no verification criteria')));
+  });
+
+  it('should flag vague verification criteria', () => {
+    const issues = supervisor._runPreChecks('plan', {
+      agentOutput: JSON.stringify({
+        tasks: [{ title: 'Build feature', verificationCriteria: ['works correctly'] }]
+      })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'WARNING' && i.message.includes('Vague criterion')));
+  });
+
+  it('should accept tasks with specific verification criteria', () => {
+    const issues = supervisor._runPreChecks('plan', {
+      agentOutput: JSON.stringify({
+        tasks: [{ title: 'Add login', verificationCriteria: ['POST /login returns 200 with valid credentials'] }]
+      })
+    });
+
+    assert.strictEqual(issues.length, 0);
+  });
+});
+
+describe('SupervisorAgent - Pre-Checks (GOAL)', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should flag incomplete tasks at goal gate', () => {
+    const issues = supervisor._runPreChecks('goal', {
+      agentOutput: JSON.stringify({
+        tasks: [
+          { title: 'Task A', status: 'completed' },
+          { title: 'Task B', status: 'in_progress' }
+        ]
+      })
+    });
+
+    assert.ok(issues.some(i => i.severity === 'VIOLATION' && i.message.includes('still incomplete')));
+  });
+
+  it('should pass when all tasks are complete', () => {
+    const issues = supervisor._runPreChecks('goal', {
+      agentOutput: JSON.stringify({
+        tasks: [
+          { title: 'Task A', status: 'completed' },
+          { title: 'Task B', status: 'done' }
+        ]
+      })
+    });
+
+    assert.strictEqual(issues.length, 0);
+  });
+});
+
+describe('SupervisorAgent - Fallback Warning Injection', () => {
+  let supervisor;
+
+  beforeEach(() => {
+    agentCore.reset();
+    supervisor = new SupervisorAgent();
+  });
+
+  it('should inject fallback warning into verification issues', () => {
+    const parsed = supervisor._parseTextResponse('Some response', 'verification');
+
+    assert.ok(parsed.issues.some(i => i.includes('FALLBACK PARSING')));
+  });
+
+  it('should inject fallback warning into verification feedback', () => {
+    const parsed = supervisor._parseTextResponse('Some response', 'verification');
+
+    assert.ok(parsed.feedback.includes('FALLBACK PARSING'));
+  });
+
+  it('should inject fallback warning into progress concerns', () => {
+    const parsed = supervisor._parseTextResponse('Score: 60', 'progress');
+
+    assert.ok(parsed.concerns.some(c => c.includes('FALLBACK PARSING')));
+  });
+
+  it('should never auto-approve on fallback even with high explicit score', () => {
+    const parsed = supervisor._parseTextResponse('Score: 95', 'verification');
+
+    assert.strictEqual(parsed.approved, false);
+    assert.strictEqual(parsed.recommendation, 'approve'); // recommendation still reflects score
   });
 });

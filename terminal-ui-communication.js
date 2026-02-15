@@ -134,8 +134,8 @@ export class CommunicationView {
 
     if (filtered.length === 0) {
       return {
-        left: ['{gray-fg}No agent communications recorded yet...{/gray-fg}'],
-        right: ['{gray-fg}Select a communication to view details{/gray-fg}']
+        left: ['{white-fg}No agent communications recorded yet...{/white-fg}'],
+        right: ['{white-fg}Select a communication to view details{/white-fg}']
       };
     }
 
@@ -151,7 +151,7 @@ export class CommunicationView {
       const type = this._getCommTypeLabel(entry.entryType);
       const desc = truncate(this._getCommPreview(entry), leftWidth - 25);
       // Use bold for selection (same style as task tree)
-      const line = `{gray-fg}${time}{/gray-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}`;
+      const line = `{white-fg}${time}{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${type}{/${this._getCommTypeColor(entry.entryType)}-fg} {cyan-fg}${agent}{/cyan-fg} ${desc}`;
       leftLines.push(isSelected ? `{bold}${line}{/bold}` : line);
     }
 
@@ -180,7 +180,7 @@ export class CommunicationView {
    */
   _getCommTypeColor(entryType) {
     const colors = { prompt: 'yellow', response: 'green', tool_call: 'magenta', tool_result: 'cyan', interaction: 'blue', phase_change: 'white' };
-    return colors[entryType] || (IS_WINDOWS ? 'white' : 'gray');
+    return colors[entryType] || 'white';
   }
 
   /**
@@ -202,14 +202,14 @@ export class CommunicationView {
 
     lines.push(`{white-fg}Type:{/white-fg} {${this._getCommTypeColor(entry.entryType)}-fg}${entry.entryType}{/${this._getCommTypeColor(entry.entryType)}-fg}`);
     lines.push(`{white-fg}Agent:{/white-fg} {cyan-fg}${agent}{/cyan-fg}`);
-    lines.push(`{white-fg}Time:{/white-fg} {gray-fg}${time}{/gray-fg}`);
+    lines.push(`{white-fg}Time:{/white-fg} {white-fg}${time}{/white-fg}`);
     lines.push('');
 
     if (entry.data?.content) {
       lines.push('{white-fg}Content:{/white-fg}');
       const wrapped = wrapText(sanitizeForBlessed(entry.data.content), width - 2);
       for (const line of wrapped) {
-        lines.push(`  {gray-fg}${line}{/gray-fg}`);
+        lines.push(`  {white-fg}${line}{/white-fg}`);
       }
     }
 
@@ -219,14 +219,14 @@ export class CommunicationView {
         lines.push('{white-fg}Input:{/white-fg}');
         const inputStr = typeof entry.data.input === 'object' ? JSON.stringify(entry.data.input, null, 2) : String(entry.data.input);
         for (const line of inputStr.split('\n')) {
-          lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
+          lines.push(`  {white-fg}${sanitizeForBlessed(line)}{/white-fg}`);
         }
       }
       if (entry.data?.result) {
         lines.push('{white-fg}Result:{/white-fg}');
         const resultStr = typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result, null, 2) : String(entry.data.result);
         for (const line of resultStr.split('\n')) {
-          lines.push(`  {gray-fg}${sanitizeForBlessed(line)}{/gray-fg}`);
+          lines.push(`  {white-fg}${sanitizeForBlessed(line)}{/white-fg}`);
         }
       }
     }
@@ -334,7 +334,7 @@ export class CommunicationView {
     }
 
     if (filterParts.length > 0) {
-      lines.push(`{yellow-fg}Filters:{/yellow-fg} ${filterParts.join('  ')}  {gray-fg}(${filteredCount} of ${totalCount}){/gray-fg}`);
+      lines.push(`{yellow-fg}Filters:{/yellow-fg} ${filterParts.join('  ')}  {white-fg}(${filteredCount} of ${totalCount}){/white-fg}`);
     }
   }
 
@@ -382,19 +382,19 @@ export class CommunicationView {
     const agentName = entry.agentName || entry.data?.agentName || 'unknown';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {yellow-fg}<- PROMPT{/yellow-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} {yellow-fg}<- PROMPT{/yellow-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
       lines.push(makeBoxTop('Prompt Content', contentWidth, 'yellow'));
       const wrapped = wrapText(content, contentWidth - 4);
       for (const line of wrapped) {
-        lines.push(`{yellow-fg}\u2502{/yellow-fg} {gray-fg}${line}{/gray-fg}`);
+        lines.push(`{yellow-fg}\u2502{/yellow-fg} {white-fg}${line}{/white-fg}`);
       }
       lines.push(makeBoxBottom(contentWidth, 'yellow'));
     } else {
       const preview = truncate(entry.data?.content || '', contentWidth - 6);
-      lines.push(`  {gray-fg}${preview}{/gray-fg}`);
+      lines.push(`  {white-fg}${preview}{/white-fg}`);
     }
   }
 
@@ -407,7 +407,7 @@ export class CommunicationView {
     const toolCalls = entry.data?.toolCalls || [];
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}-> RESPONSE{/green-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} {green-fg}-> RESPONSE{/green-fg} {${agentColor}-fg}{bold}${agentName}{/bold}{/${agentColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
@@ -429,10 +429,10 @@ export class CommunicationView {
             const inputLines = inputStr.split('\n').slice(0, 5);
             for (const inputLine of inputLines) {
               const truncatedLine = truncate(inputLine, contentWidth - 12);
-              lines.push(`{green-fg}│{/green-fg}   {gray-fg}│  ${truncatedLine}{/gray-fg}`);
+              lines.push(`{green-fg}│{/green-fg}   {white-fg}│  ${truncatedLine}{/white-fg}`);
             }
             if (inputStr.split('\n').length > 5) {
-              lines.push(`{green-fg}│{/green-fg}   {gray-fg}│  ... (more){/gray-fg}`);
+              lines.push(`{green-fg}│{/green-fg}   {white-fg}│  ... (more){/white-fg}`);
             }
           }
         }
@@ -457,7 +457,7 @@ export class CommunicationView {
     const hasResult = entry.linkedToolResult ? ' {green-fg}+{/green-fg}' : ' {yellow-fg}...{/yellow-fg}';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {magenta-fg}! TOOL CALL{/magenta-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg} -> {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${hasResult}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} {magenta-fg}! TOOL CALL{/magenta-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg} -> {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${hasResult}${selectEnd}`);
 
     if (isExpanded) {
       lines.push(makeBoxTop('Tool Call', contentWidth, 'magenta'));
@@ -471,7 +471,7 @@ export class CommunicationView {
         const inputLines = inputStr.split('\n');
         for (const inputLine of inputLines) {
           const truncatedLine = truncate(inputLine, contentWidth - 6);
-          lines.push(`{magenta-fg}│{/magenta-fg}   {gray-fg}${truncatedLine}{/gray-fg}`);
+          lines.push(`{magenta-fg}│{/magenta-fg}   {white-fg}${truncatedLine}{/white-fg}`);
         }
       }
 
@@ -488,7 +488,7 @@ export class CommunicationView {
             lines.push(`{magenta-fg}│{/magenta-fg}   {green-fg}${truncatedLine}{/green-fg}`);
           }
           if (resultStr.split('\n').length > 10) {
-            lines.push(`{magenta-fg}│{/magenta-fg}   {gray-fg}... (truncated){/gray-fg}`);
+            lines.push(`{magenta-fg}│{/magenta-fg}   {white-fg}... (truncated){/white-fg}`);
           }
         }
       }
@@ -498,7 +498,7 @@ export class CommunicationView {
       const inputPreview = entry.data?.input
         ? truncate(JSON.stringify(entry.data.input), contentWidth - 6)
         : '(no input)';
-      lines.push(`  {gray-fg}${inputPreview}{/gray-fg}`);
+      lines.push(`  {white-fg}${inputPreview}{/white-fg}`);
     }
   }
 
@@ -511,10 +511,10 @@ export class CommunicationView {
     const toolName = entry.data?.toolName || 'unknown';
 
     // Show link to original call
-    const callLink = entry.linkedToolCall ? ` {gray-fg}(call #${entry.linkedToolCall.sequence}){/gray-fg}` : '';
+    const callLink = entry.linkedToolCall ? ` {white-fg}(call #${entry.linkedToolCall.sequence}){/white-fg}` : '';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}! TOOL RESULT{/green-fg} {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${callLink}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} {green-fg}! TOOL RESULT{/green-fg} {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${callLink}${selectEnd}`);
 
     if (isExpanded) {
       lines.push(makeBoxTop('Tool Result', contentWidth, 'green'));
@@ -536,7 +536,7 @@ export class CommunicationView {
       const resultPreview = entry.data?.result
         ? truncate(typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result) : String(entry.data.result), contentWidth - 6)
         : '(no result)';
-      lines.push(`  {gray-fg}${resultPreview}{/gray-fg}`);
+      lines.push(`  {white-fg}${resultPreview}{/white-fg}`);
     }
   }
 
@@ -549,18 +549,18 @@ export class CommunicationView {
     const interactionType = entry.data?.type || 'message';
 
     lines.push('');
-    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {white-fg}<-> ${interactionType.toUpperCase()}{/white-fg} {${fromColor}-fg}{bold}${entry.data?.from}{/bold}{/${fromColor}-fg} -> {${toColor}-fg}{bold}${entry.data?.to}{/bold}{/${toColor}-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {white-fg}${time}{/white-fg} {white-fg}<-> ${interactionType.toUpperCase()}{/white-fg} {${fromColor}-fg}{bold}${entry.data?.from}{/bold}{/${fromColor}-fg} -> {${toColor}-fg}{bold}${entry.data?.to}{/bold}{/${toColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
       lines.push(makeBoxTop('Interaction', contentWidth, 'white'));
-      lines.push(`{white-fg}│{/white-fg} {gray-fg}Type:{/gray-fg} ${interactionType}`);
-      lines.push(`{white-fg}│{/white-fg} {gray-fg}From:{/gray-fg} {${fromColor}-fg}${entry.data?.from}{/${fromColor}-fg}`);
-      lines.push(`{white-fg}│{/white-fg} {gray-fg}To:{/gray-fg} {${toColor}-fg}${entry.data?.to}{/${toColor}-fg}`);
+      lines.push(`{white-fg}│{/white-fg} {white-fg}Type:{/white-fg} ${interactionType}`);
+      lines.push(`{white-fg}│{/white-fg} {white-fg}From:{/white-fg} {${fromColor}-fg}${entry.data?.from}{/${fromColor}-fg}`);
+      lines.push(`{white-fg}│{/white-fg} {white-fg}To:{/white-fg} {${toColor}-fg}${entry.data?.to}{/${toColor}-fg}`);
 
       const content = entry.data?.content || '';
       if (content) {
         lines.push(`{white-fg}│{/white-fg}`);
-        lines.push(`{white-fg}│{/white-fg} {gray-fg}Content:{/gray-fg}`);
+        lines.push(`{white-fg}│{/white-fg} {white-fg}Content:{/white-fg}`);
         const wrapped = wrapText(content, contentWidth - 4);
         for (const line of wrapped) {
           lines.push(`{white-fg}│{/white-fg}   ${line}`);
@@ -579,7 +579,7 @@ export class CommunicationView {
       lines.push(makeBoxBottom(contentWidth, 'white'));
     } else {
       const preview = truncate(entry.data?.content || '', contentWidth - 6);
-      lines.push(`  {gray-fg}${preview}{/gray-fg}`);
+      lines.push(`  {white-fg}${preview}{/white-fg}`);
     }
   }
 
@@ -591,7 +591,7 @@ export class CommunicationView {
     const newPhase = entry.data?.newPhase || 'unknown';
 
     lines.push('');
-    lines.push(`${selectMarker}{gray-fg}${time}{/gray-fg} {cyan-fg}# PHASE{/cyan-fg} {gray-fg}${prevPhase}{/gray-fg} -> {cyan-fg}{bold}${newPhase}{/bold}{/cyan-fg}${selectEnd}`);
+    lines.push(`${selectMarker}{white-fg}${time}{/white-fg} {cyan-fg}# PHASE{/cyan-fg} {white-fg}${prevPhase}{/white-fg} -> {cyan-fg}{bold}${newPhase}{/bold}{/cyan-fg}${selectEnd}`);
   }
 
   /**

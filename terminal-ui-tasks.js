@@ -104,8 +104,8 @@ export class TasksView {
 
     if (this.ui.tasks.length === 0) {
       return {
-        left: ['{gray-fg}No tasks recorded yet...{/gray-fg}', '{gray-fg}Tasks will appear here when the planner creates them.{/gray-fg}'],
-        right: ['{gray-fg}Select a task to view details{/gray-fg}']
+        left: ['{white-fg}No tasks recorded yet...{/white-fg}', '{white-fg}Tasks will appear here when the planner creates them.{/white-fg}'],
+        right: ['{white-fg}Select a task to view details{/white-fg}']
       };
     }
 
@@ -226,7 +226,7 @@ export class TasksView {
     const desc = truncate(sanitizeForBlessed(task.description || 'Task'), descMaxWidth);
 
     // Use bold for selection (no >> marker)
-    const line = `{gray-fg}${prefix}{/gray-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
+    const line = `{white-fg}${prefix}{/white-fg}{${style.fg}-fg}${icon}{/${style.fg}-fg} {white-fg}${desc}{/white-fg}`;
     lines.push(isSelected ? `{bold}${line}{/bold}` : line);
   }
 
@@ -267,7 +267,7 @@ export class TasksView {
     if (task.metadata?.replanReason) {
       lines.push(`{white-fg}Replanned:{/white-fg} {cyan-fg}yes{/cyan-fg}`);
       const reason = sanitizeForBlessed(task.metadata.replanReason);
-      lines.push(`{white-fg}Replan reason:{/white-fg} {gray-fg}${truncate(reason, detailWidth - 16)}{/gray-fg}`);
+      lines.push(`{white-fg}Replan reason:{/white-fg} {white-fg}${truncate(reason, detailWidth - 16)}{/white-fg}`);
     }
 
     // Complexity
@@ -282,7 +282,7 @@ export class TasksView {
     lines.push('{white-fg}Description:{/white-fg}');
     const descWrapped = wrapText(sanitizeForBlessed(task.description || 'No description'), detailWidth - 2);
     for (const line of descWrapped) {
-      lines.push(`  {gray-fg}${line}{/gray-fg}`);
+      lines.push(`  {white-fg}${line}{/white-fg}`);
     }
 
     // Verification Criteria

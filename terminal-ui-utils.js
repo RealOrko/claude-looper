@@ -7,7 +7,7 @@ export const IS_WINDOWS = process.platform === 'win32';
 
 // Status icons and colors (ASCII only for terminal compatibility)
 export const STATUS_STYLES = {
-  pending: { icon: 'o', fg: IS_WINDOWS ? 'white' : 'gray' },
+  pending: { icon: 'o', fg: 'white' },
   in_progress: { icon: '*', fg: 'yellow' },
   completed: { icon: '+', fg: 'green' },
   failed: { icon: 'x', fg: 'red' },

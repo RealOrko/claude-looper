@@ -45,6 +45,18 @@ Source Agent: {{sourceAgent}}
 {{previousFeedback}}
 {{/if}}
 
+{{#if preCheckIssues}}
+## Automated Pre-Check Findings
+
+These issues were detected programmatically. They are FACTS, not opinions — factor them into your score.
+
+{{#each preCheckIssues}}
+- **{{this.severity}}**: {{this.message}}
+{{/each}}
+
+**Do not approve (score >= 70) if any VIOLATION-level issues exist.**
+{{/if}}
+
 ## Instructions
 
 {{#if task.parentTaskId}}
@@ -66,6 +78,26 @@ Evaluate against these criteria:
 3. **Completeness**: Is THIS ITEM's work complete or are there gaps?
 4. **Quality**: Are there bugs, security issues, or poor practices?
 5. **Evidence**: Can completion be verified from the output?
+
+### Type-Specific Checks
+
+Apply the checks relevant to the verification type ({{verificationType}}):
+
+**For plan reviews:**
+- Does EVERY task have verification criteria that are measurable and specific? Vague criteria like "works correctly" or "is implemented" are unacceptable — reject the plan.
+- Are dependency ordering valid (no task depends on a later one)?
+- Are complexity ratings honest (a task touching 4+ files rated "simple" is a red flag)?
+- Do the tasks collectively cover the entire goal?
+
+**For code/step reviews:**
+- Does `filesModified` contain actual file paths? Claiming "complete" with zero files is invalid — automatic rejection.
+- Do test counts add up: `testsPassed + testsFailed` must equal `testsRun`. Any mismatch means unreliable data.
+- Status "passed" with zero tests run is NOT a pass — tests must actually execute.
+- Does the implementation summary demonstrate each verification criterion was addressed, not just "some work was done"?
+
+**For goal reviews:**
+- Are ALL plan tasks in completed status? Incomplete tasks mean the goal is not fully met.
+- Do agent stats show healthy execution? High rejection rates or many fix cycles suggest fragile work.
 
 Do NOT reject because:
 - Other tasks/subtasks remain incomplete
