@@ -234,7 +234,7 @@ export class AgentExecutor {
     }
 
     const templateContent = fs.readFileSync(fullPath, 'utf8');
-    const compiled = Handlebars.compile(templateContent);
+    const compiled = Handlebars.compile(templateContent, { noEscape: true });
     this.templateCache[fullPath] = compiled;
 
     return compiled;
