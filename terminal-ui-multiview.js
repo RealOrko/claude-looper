@@ -15,7 +15,8 @@ import {
   STATUS_STYLES,
   PHASE_NAMES,
   SPINNER_FRAMES,
-  getContentWidth
+  getContentWidth,
+  IS_WINDOWS
 } from './terminal-ui-utils.js';
 import { TasksView } from './terminal-ui-tasks.js';
 import { CommunicationView } from './terminal-ui-communication.js';
@@ -112,14 +113,21 @@ export class TerminalUIMultiView {
     // Create blessed screen
     // Note: smartCSR causes rendering artifacts with non-full-width elements
     // Using fastCSR is less aggressive and causes fewer issues
+    // fullUnicode: false on Windows - blessed's wcwidth counts ambiguous-width
+    // chars (█, ░, etc.) as 2 cells, but Windows terminals render them as 1,
+    // causing misaligned borders and truncated text.
     this.screen = blessed.screen({
       smartCSR: false,
       fastCSR: false,
-      useBCE: true,
+      useBCE: !IS_WINDOWS,
       title: 'Claude Looper - Multi-View',
-      fullUnicode: true,
+      fullUnicode: !IS_WINDOWS,
       autoPadding: false,
-      warnings: false
+      warnings: false,
+      style: {
+        fg: 'white',
+        bg: 'black'
+      }
     });
 
     // Hide the terminal cursor to prevent flashing during updates
@@ -166,7 +174,8 @@ export class TerminalUIMultiView {
       height: 1,
       tags: true,
       style: {
-        fg: 'white'
+        fg: 'white',
+        bg: 'black'
       }
     });
 
@@ -190,6 +199,7 @@ export class TerminalUIMultiView {
       },
       style: {
         fg: 'white',
+        bg: 'black',
         border: { fg: 'cyan' }
       },
       border: { type: 'line' },
@@ -216,7 +226,8 @@ export class TerminalUIMultiView {
       },
       style: {
         fg: 'white',
-        border: { fg: 'gray' }
+        bg: 'black',
+        border: { fg: IS_WINDOWS ? 'blue' : 'gray' }
       },
       border: { type: 'line' },
       content: '{gray-fg}Select an item{/gray-fg}'
@@ -231,7 +242,8 @@ export class TerminalUIMultiView {
       height: 1,
       tags: true,
       style: {
-        fg: 'white'
+        fg: 'white',
+        bg: 'black'
       }
     });
 
@@ -247,8 +259,9 @@ export class TerminalUIMultiView {
     for (const viewType of VIEW_ORDER) {
       const config = VIEW_CONFIG[viewType];
       const isActive = viewType === this.currentView;
-      const style = isActive ? '{cyan-fg}{bold}' : '{gray-fg}';
-      const endStyle = isActive ? '{/bold}{/cyan-fg}' : '{/gray-fg}';
+      const dimColor = IS_WINDOWS ? 'white' : 'gray';
+      const style = isActive ? '{cyan-fg}{bold}' : `{${dimColor}-fg}`;
+      const endStyle = isActive ? '{/bold}{/cyan-fg}' : `{/${dimColor}-fg}`;
       const indicator = isActive ? '*' : 'o';
       tabs.push(`${style}${indicator} ${config.label}${endStyle}`);
     }
@@ -267,7 +280,9 @@ export class TerminalUIMultiView {
       const filled = Math.round((progress.percent / 100) * barWidth);
       const empty = barWidth - filled;
       const barColor = progress.percent === 100 ? 'green' : 'cyan';
-      progressBar = `{${barColor}-fg}[${'\u2588'.repeat(filled)}${'\u2591'.repeat(empty)}]{/${barColor}-fg} {white-fg}${progress.percent}%{/white-fg}`;
+      const filledChar = IS_WINDOWS ? '#' : '\u2588';
+      const emptyChar = IS_WINDOWS ? '-' : '\u2591';
+      progressBar = `{${barColor}-fg}[${filledChar.repeat(filled)}${emptyChar.repeat(empty)}]{/${barColor}-fg} {white-fg}${progress.percent}%{/white-fg}`;
     }
 
     // Calculate left content and padding for right-aligned progress bar
@@ -312,7 +327,8 @@ export class TerminalUIMultiView {
       shortcuts.splice(3, 0, `{white-fg}f{/white-fg} Filter`, `{white-fg}p{/white-fg} Priority`);
     }
 
-    const helpText = `{gray-fg}${shortcuts.join('  ')}{/gray-fg}`;
+    const dimTag = IS_WINDOWS ? 'blue' : 'gray';
+    const helpText = `{${dimTag}-fg}${shortcuts.join('  ')}{/${dimTag}-fg}`;
     const focusIndicator = `{cyan-fg}[${focusedName}]{/cyan-fg}`;
 
     // Blue bounded box for footer using box-drawing characters
@@ -622,16 +638,17 @@ export class TerminalUIMultiView {
   _updatePanelFocusStyles() {
     const leftPanel = this.widgets.leftPanel;
     const rightPanel = this.widgets.rightPanel;
+    const dimBorder = IS_WINDOWS ? 'blue' : 'gray';
 
     if (this.focusedPanel === 'left') {
       leftPanel.style.border.fg = 'cyan';
       leftPanel.style.scrollbar = { bg: 'cyan' };
-      rightPanel.style.border.fg = 'gray';
-      rightPanel.style.scrollbar = { bg: 'gray' };
+      rightPanel.style.border.fg = dimBorder;
+      rightPanel.style.scrollbar = { bg: dimBorder };
       leftPanel.focus();
     } else {
-      leftPanel.style.border.fg = 'gray';
-      leftPanel.style.scrollbar = { bg: 'gray' };
+      leftPanel.style.border.fg = dimBorder;
+      leftPanel.style.scrollbar = { bg: dimBorder };
       rightPanel.style.border.fg = 'cyan';
       rightPanel.style.scrollbar = { bg: 'cyan' };
       rightPanel.focus();
@@ -901,7 +918,8 @@ export class TerminalUIMultiView {
       ? `{green-fg}{bold}COMPLETED{/bold}{/green-fg} in ${durationStr}`
       : `{red-fg}{bold}FAILED{/bold}{/red-fg} after ${durationStr}`;
 
-    const helpText = '{gray-fg}Press q to exit{/gray-fg}';
+    const dimExit = IS_WINDOWS ? 'blue' : 'gray';
+    const helpText = `{${dimExit}-fg}Press q to exit{/${dimExit}-fg}`;
 
     this.widgets.statusBar.setContent(
       ` ${statusText}  │  ${helpText}`

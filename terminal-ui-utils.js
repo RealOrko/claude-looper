@@ -2,9 +2,12 @@
  * Terminal UI Utilities - Shared text formatting and helper functions
  */
 
+// Platform detection - used for Windows-specific rendering fixes
+export const IS_WINDOWS = process.platform === 'win32';
+
 // Status icons and colors (ASCII only for terminal compatibility)
 export const STATUS_STYLES = {
-  pending: { icon: 'o', fg: 'gray' },
+  pending: { icon: 'o', fg: IS_WINDOWS ? 'white' : 'gray' },
   in_progress: { icon: '*', fg: 'yellow' },
   completed: { icon: '+', fg: 'green' },
   failed: { icon: 'x', fg: 'red' },
@@ -209,4 +212,27 @@ export function highlightSearchTerms(text, searchQuery) {
   }
 
   return result;
+}
+
+/**
+ * Create a dynamic-width box top line: ┌─ Label ────────
+ * @param {string} label - The label text
+ * @param {number} width - Total character width
+ * @param {string} color - Blessed color name
+ * @returns {string} Formatted box top line with blessed tags
+ */
+export function makeBoxTop(label, width, color) {
+  const prefix = `\u250C\u2500 ${label} `;
+  const fill = Math.max(1, width - prefix.length);
+  return `{${color}-fg}${prefix}${'\u2500'.repeat(fill)}{/${color}-fg}`;
+}
+
+/**
+ * Create a dynamic-width box bottom line: └────────────────
+ * @param {number} width - Total character width
+ * @param {string} color - Blessed color name
+ * @returns {string} Formatted box bottom line with blessed tags
+ */
+export function makeBoxBottom(width, color) {
+  return `{${color}-fg}\u2514${'\u2500'.repeat(Math.max(1, width - 1))}{/${color}-fg}`;
 }

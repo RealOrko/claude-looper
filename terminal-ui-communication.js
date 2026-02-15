@@ -11,7 +11,10 @@ import {
   formatTimestamp,
   getAgentColor,
   getContentWidth,
-  sanitizeForBlessed
+  sanitizeForBlessed,
+  makeBoxTop,
+  makeBoxBottom,
+  IS_WINDOWS
 } from './terminal-ui-utils.js';
 
 /**
@@ -177,7 +180,7 @@ export class CommunicationView {
    */
   _getCommTypeColor(entryType) {
     const colors = { prompt: 'yellow', response: 'green', tool_call: 'magenta', tool_result: 'cyan', interaction: 'blue', phase_change: 'white' };
-    return colors[entryType] || 'gray';
+    return colors[entryType] || (IS_WINDOWS ? 'white' : 'gray');
   }
 
   /**
@@ -383,12 +386,12 @@ export class CommunicationView {
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
-      lines.push('{yellow-fg}┌─ Prompt Content ─────────────────────────────────────────{/yellow-fg}');
+      lines.push(makeBoxTop('Prompt Content', contentWidth, 'yellow'));
       const wrapped = wrapText(content, contentWidth - 4);
       for (const line of wrapped) {
-        lines.push(`{yellow-fg}│{/yellow-fg} {gray-fg}${line}{/gray-fg}`);
+        lines.push(`{yellow-fg}\u2502{/yellow-fg} {gray-fg}${line}{/gray-fg}`);
       }
-      lines.push('{yellow-fg}└──────────────────────────────────────────────────────────{/yellow-fg}');
+      lines.push(makeBoxBottom(contentWidth, 'yellow'));
     } else {
       const preview = truncate(entry.data?.content || '', contentWidth - 6);
       lines.push(`  {gray-fg}${preview}{/gray-fg}`);
@@ -408,7 +411,7 @@ export class CommunicationView {
 
     if (isExpanded) {
       const content = entry.data?.content || '(empty)';
-      lines.push('{green-fg}┌─ Response Content ───────────────────────────────────────{/green-fg}');
+      lines.push(makeBoxTop('Response Content', contentWidth, 'green'));
       const wrapped = wrapText(content, contentWidth - 4);
       for (const line of wrapped) {
         lines.push(`{green-fg}│{/green-fg} {white-fg}${line}{/white-fg}`);
@@ -434,7 +437,7 @@ export class CommunicationView {
           }
         }
       }
-      lines.push('{green-fg}└──────────────────────────────────────────────────────────{/green-fg}');
+      lines.push(makeBoxBottom(contentWidth, 'green'));
     } else {
       const preview = truncate(entry.data?.content || '', contentWidth - 20);
       const toolSuffix = toolCalls.length > 0 ? ` {magenta-fg}(${toolCalls.length} tools){/magenta-fg}` : '';
@@ -457,7 +460,7 @@ export class CommunicationView {
     lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {magenta-fg}! TOOL CALL{/magenta-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg} -> {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${hasResult}${selectEnd}`);
 
     if (isExpanded) {
-      lines.push('{magenta-fg}┌─ Tool Call ───────────────────────────────────────────────{/magenta-fg}');
+      lines.push(makeBoxTop('Tool Call', contentWidth, 'magenta'));
       lines.push(`{magenta-fg}│{/magenta-fg} {white-fg}Tool:{/white-fg} {bold}${toolName}{/bold}`);
 
       // Format input as structured data
@@ -489,7 +492,7 @@ export class CommunicationView {
           }
         }
       }
-      lines.push('{magenta-fg}└──────────────────────────────────────────────────────────{/magenta-fg}');
+      lines.push(makeBoxBottom(contentWidth, 'magenta'));
     } else {
       // Collapsed preview
       const inputPreview = entry.data?.input
@@ -514,7 +517,7 @@ export class CommunicationView {
     lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {green-fg}! TOOL RESULT{/green-fg} {magenta-fg}{bold}${toolName}{/bold}{/magenta-fg}${callLink}${selectEnd}`);
 
     if (isExpanded) {
-      lines.push('{green-fg}┌─ Tool Result ─────────────────────────────────────────────{/green-fg}');
+      lines.push(makeBoxTop('Tool Result', contentWidth, 'green'));
       lines.push(`{green-fg}│{/green-fg} {white-fg}Tool:{/white-fg} {bold}${toolName}{/bold}`);
       lines.push(`{green-fg}│{/green-fg} {white-fg}Agent:{/white-fg} {${agentColor}-fg}${agentName}{/${agentColor}-fg}`);
 
@@ -528,7 +531,7 @@ export class CommunicationView {
           lines.push(`{green-fg}│{/green-fg}   ${truncatedLine}`);
         }
       }
-      lines.push('{green-fg}└──────────────────────────────────────────────────────────{/green-fg}');
+      lines.push(makeBoxBottom(contentWidth, 'green'));
     } else {
       const resultPreview = entry.data?.result
         ? truncate(typeof entry.data.result === 'object' ? JSON.stringify(entry.data.result) : String(entry.data.result), contentWidth - 6)
@@ -549,7 +552,7 @@ export class CommunicationView {
     lines.push(`${selectMarker}{white-fg}${expandIcon}{/white-fg} {gray-fg}${time}{/gray-fg} {white-fg}<-> ${interactionType.toUpperCase()}{/white-fg} {${fromColor}-fg}{bold}${entry.data?.from}{/bold}{/${fromColor}-fg} -> {${toColor}-fg}{bold}${entry.data?.to}{/bold}{/${toColor}-fg}${selectEnd}`);
 
     if (isExpanded) {
-      lines.push('{white-fg}┌─ Interaction ─────────────────────────────────────────────{/white-fg}');
+      lines.push(makeBoxTop('Interaction', contentWidth, 'white'));
       lines.push(`{white-fg}│{/white-fg} {gray-fg}Type:{/gray-fg} ${interactionType}`);
       lines.push(`{white-fg}│{/white-fg} {gray-fg}From:{/gray-fg} {${fromColor}-fg}${entry.data?.from}{/${fromColor}-fg}`);
       lines.push(`{white-fg}│{/white-fg} {gray-fg}To:{/gray-fg} {${toColor}-fg}${entry.data?.to}{/${toColor}-fg}`);
@@ -573,7 +576,7 @@ export class CommunicationView {
           lines.push(`{white-fg}│{/white-fg}   {magenta-fg}- ${tool.name || 'unknown'}{/magenta-fg}`);
         }
       }
-      lines.push('{white-fg}└──────────────────────────────────────────────────────────{/white-fg}');
+      lines.push(makeBoxBottom(contentWidth, 'white'));
     } else {
       const preview = truncate(entry.data?.content || '', contentWidth - 6);
       lines.push(`  {gray-fg}${preview}{/gray-fg}`);
@@ -612,7 +615,7 @@ export class CommunicationView {
     }
 
     lines.push('');
-    lines.push(`{cyan-fg}${'─'.repeat(Math.min(60, contentWidth - 2))}{/cyan-fg}`);
+    lines.push(`{cyan-fg}${'\u2500'.repeat(Math.max(1, Math.min(60, contentWidth - 2)))}{/cyan-fg}`);
     lines.push('{bold}Summary:{/bold}');
     lines.push(`  {yellow-fg}Prompts:{/yellow-fg} ${counts.prompt}  {green-fg}Responses:{/green-fg} ${counts.response}  {magenta-fg}Tool Calls:{/magenta-fg} ${counts.tool_call}  {magenta-fg}Results:{/magenta-fg} ${counts.tool_result}`);
     lines.push(`  {white-fg}Interactions:{/white-fg} ${counts.interaction}  {cyan-fg}Phase Changes:{/cyan-fg} ${counts.phase_change}`);

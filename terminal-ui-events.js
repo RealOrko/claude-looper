@@ -10,7 +10,10 @@ import {
   truncateWithTags,
   formatTimestamp,
   getContentWidth,
-  sanitizeForBlessed
+  sanitizeForBlessed,
+  makeBoxTop,
+  makeBoxBottom,
+  IS_WINDOWS
 } from './terminal-ui-utils.js';
 
 /**
@@ -255,7 +258,7 @@ export class EventsView {
       case 'workflow': return 'blue';
       case 'tool': return 'yellow';
       case 'error': return 'red';
-      case 'system': return 'gray';
+      case 'system': return IS_WINDOWS ? 'white' : 'gray';
       default: return 'white';
     }
   }
@@ -468,7 +471,7 @@ export class EventsView {
   _renderExpandedEventDetails(lines, event, contentWidth) {
     const categoryColor = this.getCategoryColor(event._category);
 
-    lines.push(`{${categoryColor}-fg}┌─ Event Details ─────────────────────────────────────────{/${categoryColor}-fg}`);
+    lines.push(makeBoxTop('Event Details', contentWidth, categoryColor));
 
     // Basic info
     lines.push(`{${categoryColor}-fg}│{/${categoryColor}-fg} {white-fg}Type:{/white-fg} ${event.data?.type || 'unknown'}`);
@@ -495,6 +498,6 @@ export class EventsView {
       }
     }
 
-    lines.push(`{${categoryColor}-fg}└──────────────────────────────────────────────────────────{/${categoryColor}-fg}`);
+    lines.push(makeBoxBottom(contentWidth, categoryColor));
   }
 }
